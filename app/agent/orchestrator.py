@@ -10,6 +10,11 @@ entry-point.  It wires together:
   →  Gemini API (with function-calling)  →  safety validation
   →  session update  →  AgentResponse
 
+``handle_message_with_trace(session_id, message) -> tuple[AgentResponse, Trace]``
+is the traced variant.  It returns the same AgentResponse PLUS a fully-populated
+``Trace`` object (see app/observability/trace.py).  All Phase 2/3 internals are
+unchanged — trace collection happens exclusively at the orchestrator boundary.
+
 Doc 13 filter
 ~~~~~~~~~~~~~
 All evidence with ``chunk.metadata.audience == "internal"`` is filtered out
@@ -39,6 +44,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 from google import genai
@@ -47,6 +53,14 @@ from google.genai import types as genai_types
 from app.agent.prompt import SYSTEM_INSTRUCTION, build_messages
 from app.agent.router import RouteDecision, RouteResult, route as do_route
 from app.config import GEMINI_MODEL, require_api_key
+from app.observability.logging_config import get_json_logger
+from app.observability.trace import (
+    CandidateRef,
+    ConflictRef,
+    Trace,
+    ToolCallRef,
+    _utcnow,
+)
 from app.orders.lookup import lookup_order
 from app.orders.models import SafeOrderResult
 from app.policy.conflict import ConflictDetector
@@ -63,6 +77,7 @@ from app.session.store import (
 )
 
 logger = logging.getLogger(__name__)
+_json_logger = get_json_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -276,7 +291,417 @@ def _call_gemini_with_tools(
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Trace population helpers
+# ---------------------------------------------------------------------------
+
+def _build_candidate_refs(evidence: list[ScoredEvidence]) -> list[CandidateRef]:
+    """Convert scored evidence into privacy-safe CandidateRef objects (no text)."""
+    refs: list[CandidateRef] = []
+    for ev in evidence:
+        m = ev.chunk.metadata
+        refs.append(CandidateRef(
+            filename=m.filename,
+            heading=m.heading,
+            document_id=m.document_id,
+            dense_score=ev.dense_score,
+            bm25_score=ev.bm25_score,
+            final_score=ev.final_score,
+            is_authoritative=is_authoritative(ev),
+            audience=m.audience,
+            status=m.status,
+        ))
+    return refs
+
+
+def _build_conflict_refs(conflict_groups: list) -> list[ConflictRef]:
+    """Convert ConflictGroup objects into privacy-safe ConflictRef objects (no text)."""
+    refs: list[ConflictRef] = []
+    for cg in conflict_groups:
+        refs.append(ConflictRef(
+            topic=cg.topic,
+            doc_a_filename=cg.doc_a_filename,
+            doc_b_filename=cg.doc_b_filename,
+            note=cg.note,
+            source=cg.source,
+            confidence=cg.confidence,
+        ))
+    return refs
+
+
+# ---------------------------------------------------------------------------
+# Structured log helpers
+# ---------------------------------------------------------------------------
+
+def _log_stage(
+    trace_id: str,
+    session_id: str,
+    stage: str,
+    message: str,
+    level: int = logging.INFO,
+    **extra_fields,
+) -> None:
+    """Emit one structured JSON log line for a pipeline stage.
+
+    Forbidden fields are never passed here — callers must only supply
+    safe, whitelisted fields. Full KB chunk text must never appear in
+    ``extra_fields``; use filename#heading references instead.
+    """
+    _json_logger.log(
+        level,
+        message,
+        extra={
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "stage": stage,
+            **extra_fields,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Traced entry point (primary implementation)
+# ---------------------------------------------------------------------------
+
+def handle_message_with_trace(
+    session_id: str,
+    message: str,
+) -> tuple[AgentResponse, Trace]:
+    """
+    Handle a single customer message and return both the AgentResponse and a
+    fully-populated Trace.
+
+    This is the primary implementation.  ``handle_message()`` calls this
+    function and discards the Trace for backward compatibility.
+
+    Full pipeline
+    -------------
+    1.  Load session
+    2.  Route message (deterministic, no LLM)
+    3.  Immediate deterministic response for UNSAFE / NEEDS_ORDER_ID
+    4.  Evidence fetch + filter (KNOWLEDGE_LOOKUP)
+    5.  Order lookup (ORDER_LOOKUP)
+    6.  Detect conflicts
+    7.  Build Gemini messages
+    8.  Call Gemini (with function-calling)
+    9.  Validate and clean response (deterministic)
+    10. Update session
+    11. Return AgentResponse + Trace
+    """
+    trace = Trace(session_id=session_id, user_message=message)
+
+    try:
+        session: Session = _session_store.get_session(session_id)
+
+        # Snapshot context BEFORE any mutation
+        ctx = session.context
+        trace.session_context_used = {
+            "last_order_id": ctx.last_order_id,
+            "last_topic": ctx.last_topic,
+            "last_route": ctx.last_route,
+        }
+
+        _log_stage(
+            trace.trace_id, session_id, "start",
+            "pipeline=started",
+            route_decision=None,
+        )
+
+        # --------------------------------------------------------------
+        # 2. Route
+        # --------------------------------------------------------------
+        route_result: RouteResult = do_route(session, message)
+        decision = route_result.decision
+        trace.ts_routed = _utcnow()
+        trace.route_decision = decision.value
+        trace.handoff_reason = route_result.handoff_reason
+
+        logger.info(
+            "[session=%s] route=%s query='%s'",
+            session_id, decision.value, route_result.query,
+        )
+        _log_stage(
+            trace.trace_id, session_id, "route",
+            "stage=routed",
+            route_decision=decision.value,
+            query_length=len(route_result.query),
+            human_handoff=route_result.human_handoff,
+            handoff_reason=route_result.handoff_reason,
+        )
+
+        # --------------------------------------------------------------
+        # 3. Immediate deterministic responses (no LLM call needed)
+        # --------------------------------------------------------------
+        if decision == RouteDecision.UNSAFE_OR_UNSUPPORTED:
+            trace.final_response = _UNSUPPORTED_ACTION_TEXT
+            trace.fallback_or_handoff_triggered = True
+            trace.ts_end = _utcnow()
+            _log_stage(
+                trace.trace_id, session_id, "done",
+                "stage=done route=UNSAFE_OR_UNSUPPORTED",
+                fallback_triggered=True,
+            )
+            _commit_turn(session_id, message, _UNSUPPORTED_ACTION_TEXT, route_result)
+            return (
+                AgentResponse(
+                    text=_UNSUPPORTED_ACTION_TEXT,
+                    human_handoff=True,
+                    route=decision.value,
+                ),
+                trace,
+            )
+
+        if decision == RouteDecision.NEEDS_ORDER_ID:
+            trace.final_response = _NEEDS_ORDER_ID_TEXT
+            trace.fallback_or_handoff_triggered = False
+            trace.ts_end = _utcnow()
+            _log_stage(
+                trace.trace_id, session_id, "done",
+                "stage=done route=NEEDS_ORDER_ID",
+                fallback_triggered=False,
+            )
+            _commit_turn(session_id, message, _NEEDS_ORDER_ID_TEXT, route_result)
+            return (
+                AgentResponse(
+                    text=_NEEDS_ORDER_ID_TEXT,
+                    human_handoff=False,
+                    route=decision.value,
+                ),
+                trace,
+            )
+
+        # --------------------------------------------------------------
+        # 4. Evidence pipeline (KNOWLEDGE_LOOKUP)
+        # --------------------------------------------------------------
+        evidence: list[ScoredEvidence] = []
+        conflict_groups = []
+
+        if decision == RouteDecision.KNOWLEDGE_LOOKUP:
+            evidence = _fetch_and_filter_evidence(route_result.query)
+            trace.ts_retrieved = _utcnow()
+            trace.retrieved_candidates = _build_candidate_refs(evidence)
+            trace.authoritative_evidence = _extract_citations(evidence)
+
+            auth_count = sum(1 for e in evidence if is_authoritative(e))
+            _log_stage(
+                trace.trace_id, session_id, "retrieve",
+                "stage=retrieved",
+                candidate_count=len(evidence),
+                authoritative_count=auth_count,
+                # Log filename#heading refs only -- never chunk text
+                top_refs=[
+                    f"{e.chunk.metadata.filename}#{e.chunk.metadata.heading}"
+                    for e in evidence[:3]
+                ],
+            )
+
+            conflict_groups = ConflictDetector().detect(evidence)
+            trace.ts_conflicts_detected = _utcnow()
+            trace.conflict_groups = _build_conflict_refs(conflict_groups)
+            _log_stage(
+                trace.trace_id, session_id, "detect_conflicts",
+                "stage=conflicts_detected",
+                conflict_count=len(conflict_groups),
+                conflicts=[
+                    {"topic": cg.topic, "confidence": cg.confidence}
+                    for cg in conflict_groups
+                ],
+            )
+
+            # Downgrade to ABSTAIN if no authoritative evidence found
+            authoritative_count = sum(1 for e in evidence if is_authoritative(e))
+            if authoritative_count < _MIN_AUTHORITATIVE:
+                logger.info("[session=%s] No authoritative evidence — abstaining.", session_id)
+                decision = RouteDecision.ABSTAIN_NO_EVIDENCE
+                trace.route_decision = decision.value
+                trace.final_response = _ABSTAIN_TEXT
+                trace.fallback_or_handoff_triggered = True
+                trace.ts_end = _utcnow()
+                _log_stage(
+                    trace.trace_id, session_id, "done",
+                    "stage=done route=ABSTAIN_NO_EVIDENCE",
+                    fallback_triggered=True,
+                )
+                _commit_turn(
+                    session_id, message, _ABSTAIN_TEXT, route_result,
+                    override_route=decision,
+                )
+                return (
+                    AgentResponse(
+                        text=_ABSTAIN_TEXT,
+                        human_handoff=True,
+                        route=decision.value,
+                    ),
+                    trace,
+                )
+
+        # --------------------------------------------------------------
+        # 5. Order lookup (ORDER_LOOKUP)
+        # --------------------------------------------------------------
+        pre_fetched_tool_result: Optional[SafeOrderResult] = None
+        if decision == RouteDecision.ORDER_LOOKUP:
+            order_id = route_result.resolved_order_id or ""
+            trace.tool_calls.append(ToolCallRef(
+                name="lookup_order",
+                args={"order_id": order_id},
+            ))
+            pre_fetched_tool_result = lookup_order(order_id)
+            logger.info(
+                "[session=%s] lookup_order('%s') → found=%s status=%s",
+                session_id, order_id,
+                pre_fetched_tool_result.found,
+                pre_fetched_tool_result.status,
+            )
+            _log_stage(
+                trace.trace_id, session_id, "tool_call",
+                "stage=tool_call name=lookup_order",
+                tool_name="lookup_order",
+                order_id=order_id,
+                found=pre_fetched_tool_result.found,
+                status=pre_fetched_tool_result.status,
+            )
+
+        # --------------------------------------------------------------
+        # 6. Append the current user turn to session
+        # --------------------------------------------------------------
+        _session_store.append_turn(session_id, "user", message)
+
+        # --------------------------------------------------------------
+        # 7. Build prompt messages
+        # --------------------------------------------------------------
+        messages = build_messages(
+            session=_session_store.get_session(session_id),
+            route=decision,
+            evidence=evidence if decision == RouteDecision.KNOWLEDGE_LOOKUP else [],
+            tool_result=pre_fetched_tool_result,
+        )
+
+        # --------------------------------------------------------------
+        # 8. Gemini call
+        # --------------------------------------------------------------
+        model = _make_gemini_model(SYSTEM_INSTRUCTION)
+        raw_text, tool_result_from_model = _call_gemini_with_tools(
+            model, messages, SYSTEM_INSTRUCTION
+        )
+        trace.ts_gemini_called = _utcnow()
+
+        # Record model-triggered tool call if any (not already recorded above)
+        if tool_result_from_model is not None and pre_fetched_tool_result is None:
+            trace.tool_calls.append(ToolCallRef(
+                name="lookup_order",
+                args={"order_id": tool_result_from_model.order_id},
+            ))
+
+        # Prefer the pre-fetched tool result; use model-triggered one only if needed.
+        effective_tool_result = pre_fetched_tool_result or tool_result_from_model
+
+        # Capture sanitized tool result (SafeOrderResult whitelist -- no raw fields)
+        if effective_tool_result is not None:
+            trace.sanitized_tool_results = effective_tool_result.model_dump(exclude_none=True)
+
+        _log_stage(
+            trace.trace_id, session_id, "gemini_call",
+            "stage=gemini_returned",
+            response_length=len(raw_text),
+            tool_called=effective_tool_result is not None,
+        )
+
+        # --------------------------------------------------------------
+        # 9. Validate and clean
+        # --------------------------------------------------------------
+        validation = validate_response(
+            raw_model_output=raw_text,
+            evidence_pack=evidence,
+            tool_result=effective_tool_result,
+            conflict_groups=conflict_groups,
+            force_handoff=route_result.human_handoff,
+            handoff_reason=route_result.handoff_reason,
+        )
+        trace.ts_validated = _utcnow()
+        trace.validation_failures = list(validation.flags)
+        trace.fallback_or_handoff_triggered = validation.human_handoff
+
+        if validation.flags:
+            logger.warning(
+                "[session=%s] Safety flags: %s", session_id, "; ".join(validation.flags)
+            )
+            _log_stage(
+                trace.trace_id, session_id, "validate",
+                "stage=validated flags_raised=true",
+                level=logging.WARNING,
+                flag_count=len(validation.flags),
+                flags=validation.flags,
+                human_handoff=validation.human_handoff,
+            )
+        else:
+            _log_stage(
+                trace.trace_id, session_id, "validate",
+                "stage=validated flags_raised=false",
+                flag_count=0,
+                human_handoff=validation.human_handoff,
+            )
+
+        # --------------------------------------------------------------
+        # 10. Build citations from authoritative evidence
+        # --------------------------------------------------------------
+        citations = _extract_citations(evidence)
+
+        # --------------------------------------------------------------
+        # 11. Update session (assistant turn + context)
+        # --------------------------------------------------------------
+        _session_store.append_turn(session_id, "assistant", validation.cleaned_response)
+
+        # Determine last_topic for multi-turn context
+        last_topic: Optional[str] = None
+        if evidence:
+            for ev in evidence:
+                if is_authoritative(ev) and ev.chunk.metadata.heading:
+                    last_topic = ev.chunk.metadata.heading
+                    break
+
+        _session_store.update_context(
+            session_id,
+            last_order_id=route_result.resolved_order_id or session.context.last_order_id,
+            last_topic=last_topic,
+            last_route=decision.value,
+        )
+
+        # Populate final trace fields
+        trace.final_response = validation.cleaned_response
+        trace.ts_end = _utcnow()
+
+        _log_stage(
+            trace.trace_id, session_id, "done",
+            "stage=done",
+            route_decision=decision.value,
+            citation_count=len(citations),
+            human_handoff=validation.human_handoff,
+            fallback_triggered=validation.human_handoff,
+        )
+
+        return (
+            AgentResponse(
+                text=validation.cleaned_response,
+                citations=citations,
+                human_handoff=validation.human_handoff,
+                route=decision.value,
+            ),
+            trace,
+        )
+
+    except Exception as exc:
+        trace.errors.append(str(exc))
+        trace.ts_end = _utcnow()
+        _log_stage(
+            trace.trace_id, session_id, "error",
+            f"stage=error exception={type(exc).__name__}",
+            level=logging.ERROR,
+            exception_type=type(exc).__name__,
+        )
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible public entry point
 # ---------------------------------------------------------------------------
 
 def handle_message(session_id: str, message: str) -> AgentResponse:
@@ -296,145 +721,13 @@ def handle_message(session_id: str, message: str) -> AgentResponse:
     9. Validate and clean response (deterministic)
     10. Update session
     11. Return AgentResponse
+
+    Note: This function calls handle_message_with_trace() internally and
+    discards the Trace for backward compatibility.  Use
+    handle_message_with_trace() directly when observability data is needed.
     """
-    session: Session = _session_store.get_session(session_id)
-
-    # ------------------------------------------------------------------
-    # 2. Route
-    # ------------------------------------------------------------------
-    route_result: RouteResult = do_route(session, message)
-    decision = route_result.decision
-    logger.info("[session=%s] route=%s query='%s'", session_id, decision.value, route_result.query)
-
-    # ------------------------------------------------------------------
-    # 3. Immediate deterministic responses (no LLM call needed)
-    # ------------------------------------------------------------------
-    if decision == RouteDecision.UNSAFE_OR_UNSUPPORTED:
-        _commit_turn(session_id, message, _UNSUPPORTED_ACTION_TEXT, route_result)
-        return AgentResponse(
-            text=_UNSUPPORTED_ACTION_TEXT,
-            human_handoff=True,
-            route=decision.value,
-        )
-
-    if decision == RouteDecision.NEEDS_ORDER_ID:
-        _commit_turn(session_id, message, _NEEDS_ORDER_ID_TEXT, route_result)
-        return AgentResponse(
-            text=_NEEDS_ORDER_ID_TEXT,
-            human_handoff=False,
-            route=decision.value,
-        )
-
-    # ------------------------------------------------------------------
-    # 4. Evidence pipeline (KNOWLEDGE_LOOKUP)
-    # ------------------------------------------------------------------
-    evidence: list[ScoredEvidence] = []
-    conflict_groups = []
-
-    if decision == RouteDecision.KNOWLEDGE_LOOKUP:
-        evidence = _fetch_and_filter_evidence(route_result.query)
-        conflict_groups = ConflictDetector().detect(evidence)
-
-        # Downgrade to ABSTAIN if no authoritative evidence found
-        authoritative_count = sum(1 for e in evidence if is_authoritative(e))
-        if authoritative_count < _MIN_AUTHORITATIVE:
-            logger.info("[session=%s] No authoritative evidence — abstaining.", session_id)
-            decision = RouteDecision.ABSTAIN_NO_EVIDENCE
-            _commit_turn(session_id, message, _ABSTAIN_TEXT, route_result, override_route=decision)
-            return AgentResponse(
-                text=_ABSTAIN_TEXT,
-                human_handoff=True,
-                route=decision.value,
-            )
-
-    # ------------------------------------------------------------------
-    # 5. Order lookup (ORDER_LOOKUP)
-    # ------------------------------------------------------------------
-    pre_fetched_tool_result: Optional[SafeOrderResult] = None
-    if decision == RouteDecision.ORDER_LOOKUP:
-        order_id = route_result.resolved_order_id or ""
-        pre_fetched_tool_result = lookup_order(order_id)
-        logger.info(
-            "[session=%s] lookup_order('%s') → found=%s status=%s",
-            session_id, order_id,
-            pre_fetched_tool_result.found,
-            pre_fetched_tool_result.status,
-        )
-
-    # ------------------------------------------------------------------
-    # 6. Append the current user turn to session
-    # ------------------------------------------------------------------
-    _session_store.append_turn(session_id, "user", message)
-
-    # ------------------------------------------------------------------
-    # 7. Build prompt messages
-    # ------------------------------------------------------------------
-    messages = build_messages(
-        session=_session_store.get_session(session_id),
-        route=decision,
-        evidence=evidence if decision == RouteDecision.KNOWLEDGE_LOOKUP else [],
-        tool_result=pre_fetched_tool_result,
-    )
-
-    # ------------------------------------------------------------------
-    # 8. Gemini call
-    # ------------------------------------------------------------------
-    model = _make_gemini_model(SYSTEM_INSTRUCTION)
-    raw_text, tool_result_from_model = _call_gemini_with_tools(
-        model, messages, SYSTEM_INSTRUCTION
-    )
-
-    # Prefer the pre-fetched tool result; use model-triggered one only if needed.
-    effective_tool_result = pre_fetched_tool_result or tool_result_from_model
-
-    # ------------------------------------------------------------------
-    # 9. Validate and clean
-    # ------------------------------------------------------------------
-    validation = validate_response(
-        raw_model_output=raw_text,
-        evidence_pack=evidence,
-        tool_result=effective_tool_result,
-        conflict_groups=conflict_groups,
-        force_handoff=route_result.human_handoff,
-        handoff_reason=route_result.handoff_reason,
-    )
-
-    if validation.flags:
-        logger.warning(
-            "[session=%s] Safety flags: %s", session_id, "; ".join(validation.flags)
-        )
-
-    # ------------------------------------------------------------------
-    # 10. Build citations from authoritative evidence
-    # ------------------------------------------------------------------
-    citations = _extract_citations(evidence)
-
-    # ------------------------------------------------------------------
-    # 11. Update session (assistant turn + context)
-    # ------------------------------------------------------------------
-    _session_store.append_turn(session_id, "assistant", validation.cleaned_response)
-
-    # Determine last_topic for multi-turn context
-    last_topic: Optional[str] = None
-    if evidence:
-        for ev in evidence:
-            if is_authoritative(ev) and ev.chunk.metadata.heading:
-                last_topic = ev.chunk.metadata.heading
-                break
-
-    _session_store.update_context(
-        session_id,
-        last_order_id=route_result.resolved_order_id or session.context.last_order_id,
-        last_topic=last_topic,
-        last_route=decision.value,
-    )
-
-    return AgentResponse(
-        text=validation.cleaned_response,
-        citations=citations,
-        human_handoff=validation.human_handoff,
-        route=decision.value,
-    )
+    response, _trace = handle_message_with_trace(session_id, message)
+    return response
 
 
 # ---------------------------------------------------------------------------
