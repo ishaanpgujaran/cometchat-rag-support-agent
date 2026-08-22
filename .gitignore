@@ -1,0 +1,29 @@
+# Secrets — never commit a real .env file
+.env
+
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Pytest caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local embedding / vector-index caches
+.chroma/
+chroma_db/
+faiss_index/
+embeddings_cache/
+*.index
+
+# Editor / OS artefacts
+.DS_Store
+.idea/
+.vscode/
+*.swp
