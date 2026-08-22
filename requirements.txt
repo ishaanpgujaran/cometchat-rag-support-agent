@@ -5,3 +5,6 @@ sentence-transformers
 pyyaml
 pytest
 google-genai
+typer
+streamlit
+
