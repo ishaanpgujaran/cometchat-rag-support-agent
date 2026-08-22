@@ -1,2 +1,6 @@
 python-dotenv
 pydantic
+rank-bm25
+sentence-transformers
+pyyaml
+pytest
