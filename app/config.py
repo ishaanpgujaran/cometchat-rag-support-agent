@@ -35,7 +35,7 @@ load_dotenv(_PROJECT_ROOT / ".env", override=False)
 # May be None at import time — only required when making a network call.
 GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY")
 
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 # ---------------------------------------------------------------------------
 # Embedding model

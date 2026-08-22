@@ -33,6 +33,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from google.genai import types as genai_types
+
 from app.agent.router import RouteDecision
 from app.orders.models import SafeOrderResult
 from app.policy.scoring import ScoredEvidence
@@ -105,7 +107,7 @@ def build_messages(
     evidence: Optional[list[ScoredEvidence]] = None,
     tool_result: Optional[SafeOrderResult] = None,
     recent_turns: int = 4,
-) -> list[dict]:
+) -> list[genai_types.Content]:
     """
     Build the Gemini message list for the current turn.
 
@@ -127,18 +129,18 @@ def build_messages(
 
     Returns
     -------
-    list[dict]
-        A list of ``{"role": ..., "parts": [...]}`` dicts suitable for
-        ``GenerativeModel.generate_content()``.
+    list[genai_types.Content]
+        A list of ``genai_types.Content`` objects suitable for
+        ``client.models.generate_content()``.
 
     Notes
     -----
     * The system instruction is NOT included in this list — it should be
-      passed as ``system_instruction`` to the GenerativeModel constructor.
+      passed as ``system_instruction`` in GenerateContentConfig.
     * Raw corpus files and raw orders.json are NEVER included.
     * Only SafeOrderResult.model_dump() is used — never the raw order record.
     """
-    messages: list[dict] = []
+    messages: list[genai_types.Content] = []
 
     # ------------------------------------------------------------------
     # 1. Session history (last 2–4 turns, not full history)
@@ -155,7 +157,12 @@ def build_messages(
         gemini_role = _role_map.get(turn.role)
         if gemini_role is None:
             continue  # skip system turns
-        messages.append({"role": gemini_role, "parts": [turn.content]})
+        messages.append(
+            genai_types.Content(
+                role=gemini_role,
+                parts=[genai_types.Part.from_text(text=turn.content)],
+            )
+        )
 
     # ------------------------------------------------------------------
     # 2. Context block — evidence and/or tool result
@@ -185,11 +192,21 @@ def build_messages(
         context_block = "\n\n---\n\n".join(context_parts)
         # Inject context as a user message immediately before the final user turn
         # If messages already has a last user turn, insert before it; otherwise append.
-        if messages and messages[-1]["role"] == "user":
-            # Prepend context to the last user message parts
-            last_parts = messages[-1]["parts"]
-            messages[-1]["parts"] = [context_block + "\n\n"] + last_parts
+        if messages and messages[-1].role == "user":
+            # Prepend context to the last user message
+            last_turn_text = ""
+            if messages[-1].parts and messages[-1].parts[0].text:
+                last_turn_text = messages[-1].parts[0].text
+            messages[-1] = genai_types.Content(
+                role="user",
+                parts=[genai_types.Part.from_text(text=context_block + "\n\n" + last_turn_text)],
+            )
         else:
-            messages.append({"role": "user", "parts": [context_block]})
+            messages.append(
+                genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part.from_text(text=context_block)],
+                )
+            )
 
     return messages

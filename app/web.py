@@ -10,7 +10,15 @@ Contains NO business logic — purely wraps handle_message_with_trace().
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 import uuid
+
+# Ensure project root is in sys.path when launched via `streamlit run app/web.py`
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import pandas as pd
 import streamlit as st
 

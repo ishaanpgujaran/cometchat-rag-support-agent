@@ -212,7 +212,7 @@ def _extract_citations(evidence: list[ScoredEvidence]) -> list[str]:
 
 def _call_gemini_with_tools(
     model: genai.Client,
-    messages: list[dict],
+    messages: list[genai_types.Content],
     system_instruction: str,
 ) -> tuple[str, Optional[SafeOrderResult]]:
     """
