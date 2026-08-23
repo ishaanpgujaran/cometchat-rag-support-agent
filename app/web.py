@@ -25,38 +25,36 @@ import streamlit as st
 from app.agent.orchestrator import handle_message_with_trace
 from app.observability.trace import Trace
 
-HUMAN_HANDOFF_MESSAGE = (
-    "To give you the most accurate help with this, "
-    "I’m going to get a human expert on the line for you."
-)
-
 
 def _render_debug_sidebar(trace: Trace) -> None:
-    """Render the execution trace in the sidebar."""
-    st.sidebar.markdown("### 🔍 Execution Trace")
-    st.sidebar.markdown(f"**Route Decision:** `{trace.route_decision}`")
+    """Render the execution trace for the last turn in the sidebar."""
+    route = trace.route_decision or "UNKNOWN"
+    route_colors = {
+        "KNOWLEDGE_LOOKUP": "green",
+        "ORDER_LOOKUP": "blue",
+        "NEEDS_ORDER_ID": "orange",
+        "UNSAFE_OR_UNSUPPORTED": "red",
+        "ABSTAIN_NO_EVIDENCE": "red",
+    }
+    badge_color = route_colors.get(route, "gray")
+    st.sidebar.markdown(f"**Route Decision:** :{badge_color}[**{route}**]")
 
     if trace.handoff_reason:
-        st.sidebar.markdown(f"**Handoff Reason:** `{trace.handoff_reason}`")
-
-    if trace.fallback_or_handoff_triggered:
-        st.sidebar.warning("⚠️ Fallback / Handoff Triggered")
+        st.sidebar.caption(f"**Handoff Reason:** {trace.handoff_reason}")
 
     # Retrieved candidates
     st.sidebar.markdown("#### Retrieved Candidates")
     if trace.retrieved_candidates:
         records = [
             {
-                "Source": f"{c.filename}#{c.heading}" if c.heading else c.filename,
-                "Final": round(c.final_score, 3),
-                "Dense": round(c.dense_score, 3),
-                "BM25": round(c.bm25_score, 3),
+                "Filename": c.filename if not c.heading else f"{c.filename}#{c.heading}",
+                "Final Score": round(c.final_score, 3),
                 "Auth": "✓" if c.is_authoritative else "✗",
             }
             for c in trace.retrieved_candidates
         ]
         df = pd.DataFrame(records)
-        st.sidebar.dataframe(df, use_container_width=True, hide_index=True)
+        st.sidebar.dataframe(df, use_container_width=True, hide_index=True, height=130)
     else:
         st.sidebar.caption("No KB retrieval in this turn.")
 
@@ -64,28 +62,32 @@ def _render_debug_sidebar(trace: Trace) -> None:
     st.sidebar.markdown("#### Tool Calls")
     if trace.tool_calls:
         for idx, tc in enumerate(trace.tool_calls, 1):
-            st.sidebar.markdown(f"**{idx}. `{tc.name}`**")
-            st.sidebar.json(tc.args)
+            order_id = tc.args.get("order_id", "")
+            if order_id:
+                st.sidebar.markdown(f"{idx}. `{tc.name}` (order_id: `{order_id}`)")
+            else:
+                args_str = ", ".join(f"{k}={v}" for k, v in tc.args.items()) if tc.args else ""
+                st.sidebar.markdown(f"{idx}. `{tc.name}`" + (f" ({args_str})" if args_str else ""))
         if trace.sanitized_tool_results:
             st.sidebar.markdown("**Sanitized Tool Result:**")
             st.sidebar.json(trace.sanitized_tool_results)
     else:
-        st.sidebar.caption("No tool calls.")
+        st.sidebar.caption("No tool calls in this turn.")
 
     # Validation
-    st.sidebar.markdown("#### Safety & Validation")
+    st.sidebar.markdown("#### Validation")
     if trace.validation_failures:
         for failure in trace.validation_failures:
             st.sidebar.error(failure)
     else:
-        st.sidebar.success("Passed validation without flags.")
+        st.sidebar.success("Validation passed cleanly")
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="Aster & Row Support Agent",
-        page_icon="👜",
-        layout="wide",
+        page_title="Aster & Row Support",
+        page_icon="🏔️",
+        layout="centered",
     )
 
     # Initialize session state
@@ -96,46 +98,46 @@ def main() -> None:
     if "latest_trace" not in st.session_state:
         st.session_state.latest_trace = None
 
-    # Sidebar controls
+    # Sidebar: Debug Panel & Session Controls
     with st.sidebar:
-        st.title("👜 Aster & Row")
-        st.caption(f"**Session ID:** `{st.session_state.session_id}`")
-
-        if st.button("🔄 Start New Session", use_container_width=True):
-            st.session_state.session_id = f"web_{uuid.uuid4().hex[:8]}"
-            st.session_state.messages = []
-            st.session_state.latest_trace = None
-            st.rerun()
-
-        available_models = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.7-flash"]
-        selected_model = st.selectbox("🤖 Model", available_models, index=0)
+        st.header("Debug Trace")
+        debug_on = st.toggle("Show trace for last turn", value=False)
+        if debug_on:
+            if st.session_state.latest_trace is not None:
+                _render_debug_sidebar(st.session_state.latest_trace)
+            else:
+                st.info("No turns executed yet. Send a message to see the debug trace.")
 
         st.divider()
-        show_debug = st.toggle("Show debug trace", value=False)
+        if st.button("🔄 New Conversation", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
 
-        if show_debug and st.session_state.latest_trace is not None:
-            _render_debug_sidebar(st.session_state.latest_trace)
-        elif show_debug:
-            st.info("No turns executed yet. Send a message to see the debug trace.")
-
-    # Main Chat View
-    st.title("Aster & Row Customer Support")
-    st.caption("Ask questions about bags, drinkware, travel accessories, policies, or order status.")
+    # Main Chat View Header
+    st.title("🏔️ Aster & Row")
+    st.caption("AI Customer Support · Powered by RAG")
+    st.divider()
 
     # Display chat history
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            if msg.get("citations"):
-                st.markdown("**Sources:**")
-                for cit in msg["citations"]:
-                    st.markdown(f"- `[{cit}]`")
+        if msg["role"] == "assistant":
             if msg.get("human_handoff"):
-                st.warning(f"⚠️ **Human Assistance Recommended:** {HUMAN_HANDOFF_MESSAGE}")
+                st.warning("⚡ A human support specialist should assist with this request.")
+            with st.chat_message("assistant", avatar="🏔️"):
+                st.markdown(msg["content"])
+                citations = msg.get("citations", [])
+                if citations:
+                    with st.expander(f"📎 {len(citations)} source(s) cited", expanded=False):
+                        for c in citations:
+                            st.markdown(f"- `{c}`")
+        else:
+            with st.chat_message("user"):
+                st.markdown(msg["content"])
 
-    # Chat input
-    if prompt := st.chat_input("How can we help you today?"):
-        # Display user message immediately
+    # Chat Input
+    if prompt := st.chat_input("Ask about orders, returns, shipping..."):
+        # Record user turn immediately
         st.session_state.messages.append({
             "role": "user",
             "content": prompt,
@@ -143,39 +145,31 @@ def main() -> None:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Call orchestrator
-        with st.chat_message("assistant"):
-            with st.spinner("Finding answer..."):
-                try:
-                    response, trace = handle_message_with_trace(
-                        session_id=st.session_state.session_id,
-                        message=prompt,
-                        model_override=selected_model,
-                    )
-                    st.markdown(response.text)
-                    if response.citations:
-                        st.markdown("**Sources:**")
-                        for cit in response.citations:
-                            st.markdown(f"- `[{cit}]`")
-                    if response.human_handoff:
-                        st.warning(f"⚠️ **Human Assistance Recommended:** {HUMAN_HANDOFF_MESSAGE}")
-
-                    # Record assistant response & trace
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": response.text,
-                        "citations": response.citations,
-                        "human_handoff": response.human_handoff,
-                    })
-                    st.session_state.latest_trace = trace
-                except Exception as exc:
-                    err_msg = f"⚠️ Gemini API service is temporarily unavailable or experiencing high demand. Please try again in a moment. (Error: {exc})"
-                    st.error(err_msg)
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": err_msg,
-                        "human_handoff": True,
-                    })
+        # Generate response
+        with st.spinner("Thinking..."):
+            try:
+                response, trace = handle_message_with_trace(
+                    session_id=st.session_state.session_id,
+                    message=prompt,
+                )
+                st.session_state.latest_trace = trace
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": response.text,
+                    "citations": response.citations,
+                    "human_handoff": response.human_handoff,
+                })
+            except Exception as exc:
+                err_msg = (
+                    "⚠️ An error occurred while processing your request. "
+                    f"Please try again in a moment. (Error: {exc})"
+                )
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": err_msg,
+                    "citations": [],
+                    "human_handoff": True,
+                })
         st.rerun()
 
 

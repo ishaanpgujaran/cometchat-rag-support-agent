@@ -123,6 +123,30 @@ class TestRouterWarrantyRouting:
             "Bug 2 regression: UNSAFE routing prevented retrieval of warranty policy."
         )
 
+    def test_refund_policy_inquiry_routes_to_knowledge_lookup(self):
+        """
+        Policy inquiries asking about refund policy must route to KNOWLEDGE_LOOKUP
+        so knowledge base documents (01-returns-policy-current.md) can be cited.
+        """
+        session = _make_fresh_session()
+        message = "What is your refund policy?"
+        result = route(session, message)
+        assert result.decision == RouteDecision.KNOWLEDGE_LOOKUP, (
+            f"Expected KNOWLEDGE_LOOKUP for 'What is your refund policy?' but got {result.decision.value}."
+        )
+
+    def test_cancellation_policy_inquiry_routes_to_knowledge_lookup(self):
+        """
+        Policy inquiries asking about cancellation policy must route to KNOWLEDGE_LOOKUP
+        so 08-order-changes-and-cancellations.md can be cited.
+        """
+        session = _make_fresh_session()
+        message = "What is your cancellation policy?"
+        result = route(session, message)
+        assert result.decision == RouteDecision.KNOWLEDGE_LOOKUP, (
+            f"Expected KNOWLEDGE_LOOKUP for 'What is your cancellation policy?' but got {result.decision.value}."
+        )
+
     def test_refund_still_routes_to_unsafe(self):
         """
         Refund requests must still route to UNSAFE_OR_UNSUPPORTED — the fix must not

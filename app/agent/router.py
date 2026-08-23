@@ -145,9 +145,16 @@ _ACTION_REQUEST_PATTERNS: list[re.Pattern] = [
 # replacement?") → KNOWLEDGE_LOOKUP so that the policy doc can be cited.
 # warranty/replacement ACTION EXECUTION (e.g. "process my claim right now") →
 # handled by trust.py::_COMPLETED_ACTION_PATTERNS after retrieval.
+# Patterns indicating an informational policy inquiry (rather than an action execution request)
+_POLICY_INQUIRY_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\b(policy|policies|rules|guidelines|terms|window|timeframe)\b", re.IGNORECASE),
+    re.compile(r"\b(what\s+is|what's|explain|describe|tell\s+me\s+about|how\s+does|how\s+do|how\s+long|can\s+you\s+explain|is\s+there\s+a)\b.{0,30}\b(refund|cancel|cancellation|price|adjustment|address|return|warranty)\b", re.IGNORECASE),
+]
+
+# Actions the system cannot execute → always escalate.
 _UNSUPPORTED_ACTION_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(cancel|cancellation|cancelling|canceling)\b", re.IGNORECASE),
-    re.compile(r"\b(refund|refunding|refunded|money back)\b", re.IGNORECASE),
+    re.compile(r"\b(refund|refunding|refunded|money\s+back)\b", re.IGNORECASE),
     re.compile(r"\b(price.?adjust|adjust.*price|price.?match|match.*price)\b", re.IGNORECASE),
     re.compile(r"\b(address.?change|change.*address|update.*address|new.*address)\b", re.IGNORECASE),
 ]
@@ -186,7 +193,7 @@ _SAFETY_REASON = (
 
 ORDER_CONTINUATION_SIGNALS: list[re.Pattern] = [
     re.compile(r"\b(it|that|the order|my order|my package|the package|the shipment|this order)\b", re.IGNORECASE),
-    re.compile(r"\b(arrive|arrival|delivery|deliver|tracking|track|shipped|shipping|carrier|status|update)\b", re.IGNORECASE),
+    re.compile(r"\b(where\s+is\s+it|when\s+will\s+it\s+arrive|has\s+it\s+shipped|tracking\s+number|tracking\s+link|eta\s+for\s+it|status\s+of\s+it)\b", re.IGNORECASE),
     re.compile(r"\bord[-\s]?\d+\b", re.IGNORECASE),   # explicit order ID in any format
 ]
 
@@ -292,24 +299,30 @@ def route(session: Session, message: str) -> RouteResult:
     # Signal 3 — Unsupported action without order ID (Doc 13 rules)
     # Direct requests to cancel, refund, change address, etc. without an
     # order ID cannot be fulfilled and must escalate immediately.
+    # Note: General policy questions (e.g. "What is your refund policy?")
+    # are informational inquiries and must route to KNOWLEDGE_LOOKUP.
     # ------------------------------------------------------------------
-    for pattern in _UNSUPPORTED_ACTION_PATTERNS:
-        if pattern.search(message):
-            return RouteResult(
-                decision=RouteDecision.UNSAFE_OR_UNSUPPORTED,
-                query=message,
-                human_handoff=True,
-                handoff_reason=_UNSUPPORTED_REASON,
-            )
+    is_policy_inquiry = any(pat.search(message) for pat in _POLICY_INQUIRY_PATTERNS)
+    if not is_policy_inquiry:
+        for pattern in _UNSUPPORTED_ACTION_PATTERNS:
+            if pattern.search(message):
+                return RouteResult(
+                    decision=RouteDecision.UNSAFE_OR_UNSUPPORTED,
+                    query=message,
+                    human_handoff=True,
+                    handoff_reason=_UNSUPPORTED_REASON,
+                )
 
     # ------------------------------------------------------------------
     # Signal 4 — Multi-turn order continuation (no new ID, but we have one)
     # Only reuse stored order ID when the incoming message contains order signals
+    # and is NOT a general policy inquiry.
     # ------------------------------------------------------------------
     has_order_signal = any(pat.search(message) for pat in ORDER_CONTINUATION_SIGNALS)
     if (
         ctx.last_order_id
         and has_order_signal
+        and not is_policy_inquiry
         and ctx.last_route == RouteDecision.ORDER_LOOKUP.value
     ):
         return RouteResult(

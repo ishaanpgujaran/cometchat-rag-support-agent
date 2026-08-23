@@ -31,7 +31,12 @@ def test_router_no_context_bleed_after_order_lookup():
     assert res2.decision == RouteDecision.KNOWLEDGE_LOOKUP
     assert res2.resolved_order_id is None
 
-    # 3. Order-continuation follow-up question
-    res3 = route(session, "When will it arrive?")
-    assert res3.decision == RouteDecision.ORDER_LOOKUP
-    assert res3.resolved_order_id == "ORD-1007"
+    # 3. Unrelated domestic shipping question
+    res3 = route(session, "How long does standard shipping take within the US?")
+    assert res3.decision == RouteDecision.KNOWLEDGE_LOOKUP
+    assert res3.resolved_order_id is None
+
+    # 4. Order-continuation follow-up question
+    res4 = route(session, "When will it arrive?")
+    assert res4.decision == RouteDecision.ORDER_LOOKUP
+    assert res4.resolved_order_id == "ORD-1007"

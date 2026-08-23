@@ -337,6 +337,14 @@ def validate_response(
     # ------------------------------------------------------------------
     if conflict_groups and not action_claim_found:
         for cg in conflict_groups:
+            # Check topic relevance for specific conflict topics
+            if cg.topic == "breeze_tumbler_dishwasher_safety":
+                is_topic_relevant = any(
+                    k in text.lower() for k in ["dishwasher", "dishwashing", "hand-wash", "wash the body", "wash the tumbler"]
+                )
+                if not is_topic_relevant:
+                    continue
+
             # Check whether both filenames are mentioned in the response
             doc_a_mentioned = cg.doc_a_filename in text
             doc_b_mentioned = cg.doc_b_filename in text

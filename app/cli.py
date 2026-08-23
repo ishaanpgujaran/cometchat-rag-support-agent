@@ -9,6 +9,7 @@ Contains NO business logic — purely wraps handle_message_with_trace().
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 import uuid
@@ -21,7 +22,10 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.syntax import Syntax
 from rich.table import Table
 
 from app.agent.orchestrator import handle_message_with_trace
@@ -42,7 +46,18 @@ HUMAN_HANDOFF_MESSAGE = (
 def _print_debug_trace(trace: Trace) -> None:
     """Pretty-print execution trace details using Rich tables and panels."""
     console.print("\n[bold yellow]─── Debug Trace ──────────────────────────────────────────[/bold yellow]")
-    console.print(f"[bold cyan]Route Decision:[/bold cyan] {trace.route_decision}")
+
+    route = trace.route_decision or "UNKNOWN"
+    route_colors = {
+        "KNOWLEDGE_LOOKUP": "green",
+        "ORDER_LOOKUP": "blue",
+        "NEEDS_ORDER_ID": "yellow",
+        "UNSAFE_OR_UNSUPPORTED": "red",
+        "ABSTAIN_NO_EVIDENCE": "red",
+    }
+    color = route_colors.get(route, "white")
+    console.print(f"[bold cyan]Route Decision:[/bold cyan] [{color}]{route}[/{color}]")
+
     if trace.handoff_reason:
         console.print(f"[bold cyan]Handoff Reason:[/bold cyan] {trace.handoff_reason}")
 
@@ -61,7 +76,7 @@ def _print_debug_trace(trace: Trace) -> None:
 
         for c in trace.retrieved_candidates:
             doc_ref = f"{c.filename}#{c.heading}" if c.heading else c.filename
-            auth_marker = "✓" if c.is_authoritative else "✗"
+            auth_marker = "[green]✓[/green]" if c.is_authoritative else "[red]✗[/red]"
             table.add_row(
                 doc_ref,
                 f"{c.final_score:.3f}",
@@ -79,7 +94,9 @@ def _print_debug_trace(trace: Trace) -> None:
         for tc in trace.tool_calls:
             console.print(f"  • [bold]{tc.name}[/bold] args={tc.args}")
         if trace.sanitized_tool_results:
-            console.print(f"  [bold green]Sanitized Result:[/bold green] {trace.sanitized_tool_results}")
+            console.print("  [bold green]Sanitized Result:[/bold green]")
+            json_str = json.dumps(trace.sanitized_tool_results, indent=2)
+            console.print(Syntax(json_str, "json", word_wrap=True))
     else:
         console.print("[dim]Tool Calls: None[/dim]")
 
@@ -87,7 +104,7 @@ def _print_debug_trace(trace: Trace) -> None:
     if trace.validation_failures:
         console.print("\n[bold red]Validation Failures / Flags:[/bold red]")
         for flag in trace.validation_failures:
-            console.print(f"  • {flag}")
+            console.print(f"  • [red]{flag}[/red]")
     else:
         console.print("[bold green]Validation: Passed cleanly[/bold green]")
 
@@ -117,6 +134,7 @@ def main(
             f"[bold green]Aster & Row Support Agent[/bold green]\n"
             f"[dim]Session ID:[/dim] [cyan]{session_id}[/cyan]\n"
             f"[dim]Debug Mode:[/dim] [cyan]{'Enabled' if debug else 'Disabled'}[/cyan]\n"
+            f"[dim]Tip: Ask about orders (ORD-XXXX), returns, shipping, or warranty.[/dim]\n"
             f"[dim]Type 'exit' or 'quit' (or press Ctrl+C) to end session.[/dim]",
             title="Welcome",
             border_style="green",
@@ -125,7 +143,7 @@ def main(
 
     while True:
         try:
-            user_input = console.input("[bold blue]You:[/bold blue] ").strip()
+            user_input = Prompt.ask("\n[bold green]You[/bold green]").strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Ending session. Goodbye![/dim]")
             sys.exit(0)
@@ -138,31 +156,45 @@ def main(
             sys.exit(0)
 
         try:
-            response, trace = handle_message_with_trace(
-                session_id=session_id,
-                message=user_input,
-            )
+            with console.status("[dim]Thinking...[/dim]", spinner="dots"):
+                response, trace = handle_message_with_trace(
+                    session_id=session_id,
+                    message=user_input,
+                )
         except Exception as exc:
             console.print(f"[bold red]Error:[/bold red] {exc}")
             continue
 
-        console.print(f"\n[bold green]Agent:[/bold green] {response.text}")
-
-        # Render citations
-        if response.citations:
-            console.print("\n[bold]Sources:[/bold]")
-            for citation in response.citations:
-                console.print(f"  [{citation}]")
+        console.print()
+        console.print(
+            Panel(
+                Markdown(response.text),
+                title="Aster & Row Support",
+                border_style="blue",
+            )
+        )
 
         # Render human handoff message if escalation triggered
         if response.human_handoff:
-            console.print(f"\n[bold yellow]{HUMAN_HANDOFF_MESSAGE}[/bold yellow]")
+            console.print(f"[bold yellow]{HUMAN_HANDOFF_MESSAGE}[/bold yellow]")
+            console.print(
+                Panel(
+                    "⚡ This request needs a human support specialist.\n"
+                    "Please contact us at support@asterandrow.com",
+                    title="Human Handoff Required",
+                    border_style="yellow",
+                )
+            )
+
+        # Render citations
+        if response.citations:
+            console.print("[dim]Sources:[/dim]")
+            for c in response.citations:
+                console.print(f"  [dim cyan]↳ [{c}][/dim cyan]")
 
         # Render debug trace if enabled
         if debug:
             _print_debug_trace(trace)
-
-        console.print()
 
 
 if __name__ == "__main__":

@@ -259,16 +259,18 @@ class ConflictDetector:
             if registry_entry["topic"] == "breeze_tumbler_dishwasher_safety":
                 for ca in chunks_a:
                     text_a = ca.text.lower()
-                    if "dishwasher" in text_a or "tumbler" in text_a or "care" in text_a or "clean" in text_a:
+                    heading_a = (ca.metadata.heading or "").lower()
+                    if "dishwasher" in text_a or "dishwasher" in heading_a or "hand-wash" in text_a or "top rack" in text_a or "breeze tumbler" in heading_a:
                         matched_chunk_a = ca
                         break
                 for cb in chunks_b:
                     text_b = cb.text.lower()
-                    if "dishwasher" in text_b or "tumbler" in text_b or "care" in text_b or "clean" in text_b:
+                    heading_b = (cb.metadata.heading or "").lower()
+                    if "dishwasher" in text_b or "dishwasher" in heading_b or "cleaning" in heading_b or "care" in heading_b or "product" in heading_b:
                         matched_chunk_b = cb
                         break
-                if not (matched_chunk_a and matched_chunk_b):
-                    continue
+                matched_chunk_a = matched_chunk_a or chunks_a[0]
+                matched_chunk_b = matched_chunk_b or chunks_b[0]
             else:
                 matched_chunk_a = chunks_a[0]
                 matched_chunk_b = chunks_b[0]
