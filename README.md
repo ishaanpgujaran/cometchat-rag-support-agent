@@ -12,16 +12,17 @@ Built without heavy, opaque agent frameworks (no LangChain, no LlamaIndex), this
 
 ## Demo
 
-![Demo Walkthrough](docs/demo.gif)
+🎥 **[Watch Demo Video Walkthrough on Google Drive](https://drive.google.com/file/d/1mn0NFWuGA_PtGDvrHa7NMUkBZzlcaPYz/view?usp=drive_link)**
 
-> **Demo Walkthrough Video Highlights:**
-> 1. **Knowledge-base Question with Citation:** Querying return windows and refund policies correctly retrieves and cites `01-returns-policy-current.md#Standard return window` without hallucination.
-> 2. **Real-time Order Lookup:** Querying order `ORD-1007` invokes `lookup_order`, sanitizes sensitive fields, and presents transit status via UPS without exposing raw JSON or internal tags.
-> 3. **Multi-Turn Conversation:** Asking *"Do you ship to Canada?"* followed by *"What about duties?"* maintains conversational topic context across turns.
-> 4. **Safe Refusal & Human Handoff:** Inquiries requesting cancellations, refunds, address changes, or out-of-scope vegan material guarantees cleanly escalate to human support (`human_handoff = True`).
-> 5. **Automated Evaluation Suite:** Running `python -m evaluation.run_eval` demonstrates a **25/25 (100%) pass rate** across all visible and edge evaluation suites.
+### Video Walkthrough Coverage & Flow Mapping
 
-*(Video file also available in repo: [`docs/demo.mp4`](docs/demo.mp4))*
+| # | Requirement | Flow in Video | Demonstration & Behavior |
+| :---: | :--- | :--- | :--- |
+| **1** | **Knowledge-base question with citations** | *"What is the standard return window for a customer, and does it cost anything to return an item?"* | Accurately explains the 30-day window and free prepaid returns, citing `01-returns-policy-current.md#Standard return window` in a collapsible expander. |
+| **2** | **Order lookup** | *"Where is my order ORD-1007 and when is it expected to arrive?"* | Executes `lookup_order`, sanitizes sensitive database fields via `SafeOrderResult`, outputs UPS carrier details and August 22 arrival date with `[Order record: ORD-1007]` citation. |
+| **3** | **Multi-turn conversation** | **Turn 1:** *"Do you offer international shipping?"*<br/>**Turn 2:** *"What about shipping to Canada, and how long does it typically take?"* | Preserves conversational context across turns, correctly answering Canada-specific shipping timelines (6–10 business days) and duties without context bleed. |
+| **4** | **Safe refusal & human help recommendation** | *"I need to cancel my order ORD-1002 immediately and get a full refund."* | Correctly explains cancellation policy window while refusing to execute transactions directly, displaying the prominent amber human handoff banner (`human_handoff = True`). |
+| **5** | **Evaluation suite running** | Terminal execution of `python -m evaluation.run_eval` | Runs the automated 25-case evaluation suite with model rotation, streaming live passes and achieving a verified **25/25 (100%) pass rate**. |
 
 ---
 
