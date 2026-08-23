@@ -43,6 +43,7 @@ AgentResponse
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -569,6 +570,71 @@ def handle_message_with_trace(
                 status=pre_fetched_tool_result.status,
             )
 
+            # ----------------------------------------------------------
+            # Bug 3 fix: Supplemental KB retrieval for membership-sensitive
+            # ORDER_LOOKUP queries.
+            #
+            # When the order record reveals membership_tier='trailplus', the
+            # query almost certainly involves membership-dependent policy (e.g.
+            # return windows).  Without fetching KB evidence, trace.authoritative_evidence
+            # would be empty and the LLM has no grounding for the correct answer.
+            #
+            # We augment the evidence list with a targeted retrieval so that
+            # the relevant policy docs (e.g. 09-trailplus-membership.md) are
+            # present in the trace and available to the LLM as evidence context.
+            # This evidence is passed to build_messages() only when membership
+            # context is detected; for standard lookups the evidence list stays
+            # empty (preserving existing behaviour).
+            # ----------------------------------------------------------
+            # Supplemental KB retrieval for ORDER_LOOKUP queries involving
+            # policy (e.g. cancellation eligibility) or TrailPlus membership.
+            _needs_supplemental = (
+                pre_fetched_tool_result.found
+                and (
+                    pre_fetched_tool_result.membership_tier == "trailplus"
+                    or bool(re.search(r"\b(cancel|cancellation|return|warranty|policy|exchange|change)\b", route_result.query, re.IGNORECASE))
+                )
+            )
+            if _needs_supplemental:
+                supplemental_query = route_result.query
+                if pre_fetched_tool_result.membership_tier == "trailplus":
+                    supplemental_query += " TrailPlus membership return window"
+                supplemental_raw = _fetch_and_filter_evidence(supplemental_query)
+                if not trace.ts_retrieved:
+                    trace.ts_retrieved = _utcnow()
+                supplemental_auth = filter_authoritative(supplemental_raw)
+                if supplemental_auth:
+                    # Merge into the candidate trace (no text — filenames+scores only)
+                    existing_refs = {ref.filename for ref in trace.retrieved_candidates}
+                    for ev in supplemental_raw:
+                        if ev.chunk.metadata.filename not in existing_refs:
+                            from app.observability.trace import CandidateRef as _CR
+                            trace.retrieved_candidates.append(_CR(
+                                filename=ev.chunk.metadata.filename,
+                                heading=ev.chunk.metadata.heading,
+                                document_id=ev.chunk.metadata.document_id,
+                                dense_score=ev.dense_score,
+                                bm25_score=ev.bm25_score,
+                                final_score=ev.final_score,
+                                is_authoritative=True,
+                                audience=ev.chunk.metadata.audience,
+                                status=ev.chunk.metadata.status,
+                            ))
+                    # Populate authoritative_evidence with citation strings
+                    supplemental_citations = _extract_citations(supplemental_auth)
+                    existing_auth = set(trace.authoritative_evidence)
+                    for cit in supplemental_citations:
+                        if cit not in existing_auth:
+                            trace.authoritative_evidence.append(cit)
+                    # Store supplemental evidence for prompt construction
+                    evidence = supplemental_auth
+                    _log_stage(
+                        trace.trace_id, session_id, "supplemental_retrieve",
+                        "stage=supplemental_retrieved",
+                        candidate_count=len(supplemental_raw),
+                        authoritative_count=len(supplemental_auth),
+                    )
+
         # --------------------------------------------------------------
         # 6. Append the current user turn to session
         # --------------------------------------------------------------
@@ -580,7 +646,9 @@ def handle_message_with_trace(
         messages = build_messages(
             session=_session_store.get_session(session_id),
             route=decision,
-            evidence=evidence if decision == RouteDecision.KNOWLEDGE_LOOKUP else [],
+            # Bug 3 fix: pass evidence for ORDER_LOOKUP too — the supplemental
+            # retrieval block above may have populated it for trailplus orders.
+            evidence=evidence,
             tool_result=pre_fetched_tool_result,
         )
 

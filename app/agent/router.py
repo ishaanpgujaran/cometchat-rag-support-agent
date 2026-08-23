@@ -122,13 +122,28 @@ _ORDER_CONTEXT_KEYWORDS: frozenset[str] = frozenset({
 # Encoded from Doc 13 (13-support-escalation.md) internal rules.
 # ---------------------------------------------------------------------------
 
-# Actions the system cannot execute → always escalate
+# Actions the system cannot execute → always escalate.
+#
+# NARROWING RATIONALE (Bug 2 fix):
+# The original patterns were over-broad: `replacement|replace|exchange|swap`
+# fired on messages like "arrange a replacement" (warranty context) BEFORE
+# retrieval could surface the relevant policy doc.  Similarly,
+# `claim.*warranty|file.*warranty` fired on legitimate warranty-info queries.
+#
+# The correct safety net for false action-completion claims is
+# trust.py::_COMPLETED_ACTION_PATTERNS — which fires AFTER the LLM responds.
+# Routing to UNSAFE pre-LLM is only appropriate for pure financial/admin action
+# demands (refund, address change, price adjustment) where NO policy context
+# is useful, or for explicit warranty-approval execution phrasing.
+#
+# warranty/replacement INQUIRY (e.g. "is my zipper covered?", "can I get a
+# replacement?") → KNOWLEDGE_LOOKUP so that the policy doc can be cited.
+# warranty/replacement ACTION EXECUTION (e.g. "process my claim right now") →
+# handled by trust.py::_COMPLETED_ACTION_PATTERNS after retrieval.
 _UNSUPPORTED_ACTION_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(cancel|cancellation|cancelling|canceling)\b", re.IGNORECASE),
-    re.compile(r"\b(refund|refunding|refunded|money back|get.*back)\b", re.IGNORECASE),
-    re.compile(r"\b(replacement|replace|exchange|swap)\b", re.IGNORECASE),
+    re.compile(r"\b(refund|refunding|refunded|money back)\b", re.IGNORECASE),
     re.compile(r"\b(price.?adjust|adjust.*price|price.?match|match.*price)\b", re.IGNORECASE),
-    re.compile(r"\b(warranty.?approv|approv.*warranty|claim.*warranty|file.*warranty)\b", re.IGNORECASE),
     re.compile(r"\b(address.?change|change.*address|update.*address|new.*address)\b", re.IGNORECASE),
 ]
 
@@ -232,17 +247,9 @@ def route(session: Session, message: str) -> RouteResult:
     ctx = session.context
 
     # ------------------------------------------------------------------
-    # Signal 1 — Safety / unsupported-action gate (Doc 13 rules)
+    # Signal 1 — Safety / legal / security gate (Doc 13 rules)
+    # Always escalates immediately, regardless of order ID.
     # ------------------------------------------------------------------
-    for pattern in _UNSUPPORTED_ACTION_PATTERNS:
-        if pattern.search(message):
-            return RouteResult(
-                decision=RouteDecision.UNSAFE_OR_UNSUPPORTED,
-                query=message,
-                human_handoff=True,
-                handoff_reason=_UNSUPPORTED_REASON,
-            )
-
     for pattern in _SAFETY_ESCALATION_PATTERNS:
         if pattern.search(message):
             return RouteResult(
@@ -254,14 +261,35 @@ def route(session: Session, message: str) -> RouteResult:
 
     # ------------------------------------------------------------------
     # Signal 2 — Explicit order ID in message
+    # If the user provides an order ID alongside an action request (e.g.
+    # cancellation eligibility inquiry for ORD-1001), route to ORDER_LOOKUP
+    # so the order can be inspected and policy cited, while flagging handoff
+    # if an unsupported action was requested.
     # ------------------------------------------------------------------
     order_id = _extract_order_id(message)
     if order_id:
+        has_unsupported_action = any(pat.search(message) for pat in _UNSUPPORTED_ACTION_PATTERNS)
         return RouteResult(
             decision=RouteDecision.ORDER_LOOKUP,
             query=message,
             resolved_order_id=order_id,
+            human_handoff=has_unsupported_action,
+            handoff_reason=_UNSUPPORTED_REASON if has_unsupported_action else None,
         )
+
+    # ------------------------------------------------------------------
+    # Signal 3 — Unsupported action without order ID (Doc 13 rules)
+    # Direct requests to cancel, refund, change address, etc. without an
+    # order ID cannot be fulfilled and must escalate immediately.
+    # ------------------------------------------------------------------
+    for pattern in _UNSUPPORTED_ACTION_PATTERNS:
+        if pattern.search(message):
+            return RouteResult(
+                decision=RouteDecision.UNSAFE_OR_UNSUPPORTED,
+                query=message,
+                human_handoff=True,
+                handoff_reason=_UNSUPPORTED_REASON,
+            )
 
     # ------------------------------------------------------------------
     # Signal 3 — Multi-turn order continuation (no new ID, but we have one)

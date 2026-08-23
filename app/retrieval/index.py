@@ -135,7 +135,10 @@ class HybridIndex:
         self._bm25 = BM25Okapi(tokenised)
 
         # Dense
-        self._st_model = SentenceTransformer(model_name)
+        try:
+            self._st_model = SentenceTransformer(model_name, local_files_only=True)
+        except Exception:
+            self._st_model = SentenceTransformer(model_name)
         self._corpus_embeddings = self._build_or_load_embeddings(chunks, model_name)
 
     # ------------------------------------------------------------------

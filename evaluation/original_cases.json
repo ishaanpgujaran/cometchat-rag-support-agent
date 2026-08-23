@@ -285,7 +285,7 @@
                 "tool": "not_called",
                 "handoff": false
             }
-        }
+        },
         {
             "id": "trailplus-joined-after-order-condition-not-met",
             "category": "retrieval",

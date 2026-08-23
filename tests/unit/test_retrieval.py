@@ -43,10 +43,9 @@ def chunks():
 
 
 @pytest.fixture(scope="module")
-def index(tmp_path_factory, chunks):
-    """Build a HybridIndex with a temporary cache so tests don't pollute the real cache."""
-    cache_dir = tmp_path_factory.mktemp("emb_cache")
-    cache_file = cache_dir / "embeddings.pkl"
+def index(chunks):
+    """Build a HybridIndex using the pre-warmed embeddings cache."""
+    cache_file = _REPO_ROOT / "embeddings_cache" / "embeddings.pkl"
     return HybridIndex(chunks, cache_path=cache_file)
 
 
