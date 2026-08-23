@@ -35,7 +35,15 @@ load_dotenv(_PROJECT_ROOT / ".env", override=False)
 # May be None at import time — only required when making a network call.
 GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY")
 
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
+
+# Comma-separated list of models used by the evaluation suite for rate-limit rotation.
+# Falls back to [GEMINI_MODEL] if not set, which will likely hit the 20 RPD cap on a 25-case run.
+GEMINI_EVAL_MODELS: list[str] = [
+    m.strip()
+    for m in os.getenv("GEMINI_EVAL_MODELS", GEMINI_MODEL).split(",")
+    if m.strip()
+]
 
 # ---------------------------------------------------------------------------
 # Embedding model

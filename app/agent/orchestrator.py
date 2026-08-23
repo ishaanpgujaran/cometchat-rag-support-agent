@@ -52,7 +52,7 @@ from google.genai import types as genai_types
 
 from app.agent.prompt import SYSTEM_INSTRUCTION, build_messages
 from app.agent.router import RouteDecision, RouteResult, route as do_route
-from app.config import GEMINI_MODEL, require_api_key
+from app.config import GEMINI_MODEL, GEMINI_EVAL_MODELS, require_api_key
 from app.observability.logging_config import get_json_logger
 from app.observability.trace import (
     CandidateRef,
@@ -219,6 +219,7 @@ def _call_gemini_with_tools(
     model: genai.Client,
     messages: list[genai_types.Content],
     system_instruction: str,
+    model_name: str = GEMINI_MODEL,
 ) -> tuple[str, Optional[SafeOrderResult]]:
     """
     Call Gemini (google-genai SDK), handle an optional lookup_order tool call.
@@ -238,7 +239,7 @@ def _call_gemini_with_tools(
     )
 
     response = model.models.generate_content(
-        model=GEMINI_MODEL,
+        model=model_name,
         contents=messages,
         config=config,
     )
@@ -279,7 +280,7 @@ def _call_gemini_with_tools(
                     ),
                 ]
                 response = model.models.generate_content(
-                    model=GEMINI_MODEL,
+                    model=model_name,
                     contents=follow_up,
                     config=config,
                 )
@@ -370,6 +371,7 @@ def _log_stage(
 def handle_message_with_trace(
     session_id: str,
     message: str,
+    model_override: str | None = None,
 ) -> tuple[AgentResponse, Trace]:
     """
     Handle a single customer message and return both the AgentResponse and a
@@ -587,7 +589,8 @@ def handle_message_with_trace(
         # --------------------------------------------------------------
         model = _make_gemini_model(SYSTEM_INSTRUCTION)
         raw_text, tool_result_from_model = _call_gemini_with_tools(
-            model, messages, SYSTEM_INSTRUCTION
+            model, messages, SYSTEM_INSTRUCTION,
+            model_name=model_override or GEMINI_MODEL,
         )
         trace.ts_gemini_called = _utcnow()
 
