@@ -383,6 +383,9 @@ def validate_response(
                 f"Order '{tool_result.order_id}' is in exception status — human review required."
             )
 
+    # Normalize hyphenated adjective forms (e.g. "45-calendar-day" -> "45 calendar days")
+    text = re.sub(r'\b(\d+)-calendar-days?\b', r'\1 calendar days', text, flags=re.IGNORECASE)
+
     is_valid = len(flags) == 0
 
     return ValidationResult(
