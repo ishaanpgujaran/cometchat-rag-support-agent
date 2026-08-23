@@ -175,6 +175,8 @@ def _apply_status_rules(raw: dict, result_kwargs: dict) -> None:
         result_kwargs["estimated_delivery"] = None
         result_kwargs["carrier"] = None
         result_kwargs["tracking_number"] = None
+        result_kwargs["shipped_at"] = None
+        result_kwargs["delivered_at"] = None
 
     # Shipped with no ETA: keep None, do not invent.
     # (ORD-1011: Canada Post, estimated_delivery=null in raw -- confirmed.)

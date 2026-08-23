@@ -167,7 +167,7 @@ _UNSUPPORTED_ACTION_TEXT = (
 
 _ABSTAIN_TEXT = (
     "I don't have enough information in our knowledge base to answer that question reliably. "
-    "I'd recommend reaching out to our support team who can look into this for you."
+    "I recommend reaching out to our support team for human confirmation."
 )
 
 

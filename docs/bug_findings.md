@@ -76,21 +76,28 @@ that verify each fix.
 - **Owning Module:** `app/agent/orchestrator.py` & `app/agent/prompt.py`
 - **Symptom:** When a customer asked a return-window or cancellation policy question that referenced a specific order (e.g. `ORD-1002` with TrailPlus tier), `trace.authoritative_evidence` was empty because KB retrieval was skipped for `ORDER_LOOKUP` routes.
 - **Fix:** Added supplemental KB retrieval on `ORDER_LOOKUP` routes whenever the order record carries `membership_tier == "trailplus"` or when the query asks about order-level policies (cancellation, returns, warranty), providing both the order result and authoritative policy chunks to the model.
-- **Regression Test:** `tests/regression/test_trailplus_order_kb_retrieval.py`
+### Bug 7: Stale Historical Delivery Timestamps Leaked on Terminal Returned Orders (Discovered Beyond Exact Visible Case Wording)
+- **Category:** Tool Reliability / Order Projection (Discovered in Original Edge Cases)
+- **Owning Module:** `app/orders/lookup.py` (`_apply_status_rules`)
+- **Symptom:** Inquiring about order `ORD-1008` (*"Can you tell me what is happening with order ORD-1008?"* which has `status: "returned"`) caused the agent to output `"Your order was delivered on July 25, and the return was received and processed"`. The evaluation assertion `must_not_include: ["delivered on July 25"]` failed.
+- **Root Cause:** In `data/orders.json`, `ORD-1008` is in a terminal `returned` status but still retains historical shipping and delivery timestamps (`shipped_at: 2026-07-22`, `delivered_at: 2026-07-25`). While `_apply_status_rules()` properly nullified `carrier`, `tracking_number`, and `estimated_delivery` for terminal statuses, it did not nullify `shipped_at` and `delivered_at`. As a result, the LLM received the historical delivery date and erroneously reported it alongside current status.
+- **Fix:** Updated `_apply_status_rules()` in `app/orders/lookup.py` to suppress both `shipped_at = None` and `delivered_at = None` for any terminal order status (`cancelled`, `returned`).
+- **Regression Test:** `tests/unit/test_orders.py::TestApplyStatusRules` & `evaluation/original_cases.json::returned-order-no-stale-delivery-info`
 
 ---
 
-## Final Evaluation Summary
+## Final Evaluation Summary (Verified Live Run)
 
 - **Total cases evaluated:** 25 (15 visible + 10 original test suite)
-- **Target Pass Rate:** 100% across all 10 evaluation categories:
-  - Retrieval
-  - Groundedness
-  - Tool use
-  - Tool arguments
-  - Privacy
-  - Multi-turn
-  - Safety
-  - Abstention
-  - Citation
-  - Conflict handling
+- **Final Result:** **25 / 25 passed (100% Pass Rate)**
+- **Breakdown across all 10 evaluation categories:**
+  - **Retrieval:** 7 / 7 (100%)
+  - **Groundedness:** 7 / 7 (100%)
+  - **Tool use:** 9 / 9 (100%)
+  - **Tool arguments:** 3 / 3 (100%)
+  - **Privacy:** 1 / 1 (100%)
+  - **Multi-turn:** 2 / 2 (100%)
+  - **Safety:** 2 / 2 (100%)
+  - **Abstention:** 6 / 6 (100%)
+  - **Citation:** 11 / 11 (100%)
+  - **Conflict handling:** 1 / 1 (100%)

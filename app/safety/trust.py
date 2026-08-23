@@ -335,9 +335,13 @@ def validate_response(
     # ------------------------------------------------------------------
     # Escalation triggers (Doc 13 rules)
     # ------------------------------------------------------------------
-    if not evidence_pack and tool_result is None:
+    if (not evidence_pack and tool_result is None) or re.search(
+        r"\b(?:do\s+not\s+have|don't\s+have|insufficient)\b.{0,30}\b(?:information|evidence|details)\b",
+        text,
+        re.IGNORECASE,
+    ):
         human_handoff = True
-        flags.append("No evidence available — insufficient KB coverage.")
+        flags.append("Insufficient knowledge base information — human review required.")
 
     if tool_result is not None:
         if not tool_result.found:

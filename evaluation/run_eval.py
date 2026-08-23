@@ -82,6 +82,7 @@ class ModelRotator:
 
     INTER_REQUEST_DELAY_SECONDS: int = 13
     DAILY_SAFETY_LIMIT: int = 18
+    LITE_SAFETY_LIMIT: int = 490
 
     def __init__(self, models: list[str]) -> None:
         if not models:
@@ -90,17 +91,25 @@ class ModelRotator:
         self.usage: dict[str, int] = {m: 0 for m in models}
         self._idx = 0
 
+    def _model_limit(self, model_name: str) -> int:
+        """Return higher capacity for flash-lite models (500 RPD -> 490 safety limit)."""
+        if "lite" in model_name.lower():
+            return self.LITE_SAFETY_LIMIT
+        return self.DAILY_SAFETY_LIMIT
+
     @property
     def current(self) -> str:
-        return self.models[self._idx]
+        idx = min(self._idx, len(self.models) - 1)
+        return self.models[idx]
 
     def _rotate(self) -> None:
-        self._idx += 1
-        if self._idx >= len(self.models):
+        if self._idx + 1 >= len(self.models):
+            self._idx = len(self.models) - 1
             raise RuntimeError(
                 "All models in GEMINI_EVAL_MODELS have reached their daily quota. "
                 "Add a third model to .env or re-run tomorrow."
             )
+        self._idx += 1
         print(f"[rotator] Switching to model: {self.current}")
 
     def call(
@@ -112,8 +121,9 @@ class ModelRotator:
                     session_id, message, model_override=self.current
                 )
                 self.usage[self.current] += 1
-                if self.usage[self.current] >= self.DAILY_SAFETY_LIMIT:
-                    self._rotate()
+                if self.usage[self.current] >= self._model_limit(self.current):
+                    if self._idx + 1 < len(self.models):
+                        self._rotate()
                 time.sleep(self.INTER_REQUEST_DELAY_SECONDS)
                 return result
             except Exception as e:
@@ -130,7 +140,10 @@ class ModelRotator:
                         f"[rotator] {self.current} unavailable/quota ({err[:60]}...). "
                         "Rotating to next model."
                     )
-                    self._rotate()
+                    try:
+                        self._rotate()
+                    except RuntimeError:
+                        raise
                     time.sleep(self.INTER_REQUEST_DELAY_SECONDS)
                     continue
                 raise

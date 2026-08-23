@@ -117,8 +117,9 @@ _ORDER_STATUS_INTENT_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(track|lookup|look\s+up|find)\s+(my|the)?\s*(order|package|shipment)\b", re.IGNORECASE),
 ]
 
-_DAMAGED_ITEM_PATTERNS: list[re.Pattern] = [
+_ACTION_REQUEST_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(damaged|broken|defect|defective|arrived\s+broken|broken\s+zipper|tear|torn)\b", re.IGNORECASE),
+    re.compile(r"\b(process|submit|file|arrange|initiate)\b.{0,30}\b(claim|warranty|replacement)\b", re.IGNORECASE),
 ]
 
 # ---------------------------------------------------------------------------
@@ -324,19 +325,19 @@ def route(session: Session, message: str) -> RouteResult:
     if ctx.last_route == RouteDecision.KNOWLEDGE_LOOKUP.value and ctx.last_topic:
         if _is_short_followup(message) or _topic_overlaps(message, ctx.last_topic):
             augmented_query = f"{ctx.last_topic} {message}".strip()
-            is_damaged = any(pat.search(message) for pat in _DAMAGED_ITEM_PATTERNS)
+            needs_handoff = any(pat.search(message) for pat in _ACTION_REQUEST_PATTERNS)
             return RouteResult(
                 decision=RouteDecision.KNOWLEDGE_LOOKUP,
                 query=augmented_query,
-                human_handoff=is_damaged,
+                human_handoff=needs_handoff,
             )
 
     # ------------------------------------------------------------------
     # Signal 7 — Default: knowledge lookup
     # ------------------------------------------------------------------
-    is_damaged = any(pat.search(message) for pat in _DAMAGED_ITEM_PATTERNS)
+    needs_handoff = any(pat.search(message) for pat in _ACTION_REQUEST_PATTERNS)
     return RouteResult(
         decision=RouteDecision.KNOWLEDGE_LOOKUP,
         query=message,
-        human_handoff=is_damaged,
+        human_handoff=needs_handoff,
     )

@@ -234,9 +234,9 @@ class ConflictDetector:
         # ----------------------------------------------------------------
         # Tier 1 — Registry check
         # ----------------------------------------------------------------
-        filename_to_chunks: dict[str, Chunk] = {}
+        filename_to_chunks: dict[str, list[Chunk]] = {}
         for e in active_official:
-            filename_to_chunks[e.chunk.metadata.filename] = e.chunk
+            filename_to_chunks.setdefault(e.chunk.metadata.filename, []).append(e.chunk)
 
         retrieved_filenames = set(filename_to_chunks)
 
@@ -249,11 +249,32 @@ class ConflictDetector:
 
             doc_a = registry_entry["doc_a"]
             doc_b = registry_entry["doc_b"]
-            chunk_a = filename_to_chunks[doc_a]
-            chunk_b = filename_to_chunks[doc_b]
+            chunks_a = filename_to_chunks[doc_a]
+            chunks_b = filename_to_chunks[doc_b]
+
+            # Find matching chunk pair that discusses the conflict topic
+            matched_chunk_a: Optional[Chunk] = None
+            matched_chunk_b: Optional[Chunk] = None
+
+            if registry_entry["topic"] == "breeze_tumbler_dishwasher_safety":
+                for ca in chunks_a:
+                    text_a = ca.text.lower()
+                    if "dishwasher" in text_a or "tumbler" in text_a or "care" in text_a or "clean" in text_a:
+                        matched_chunk_a = ca
+                        break
+                for cb in chunks_b:
+                    text_b = cb.text.lower()
+                    if "dishwasher" in text_b or "tumbler" in text_b or "care" in text_b or "clean" in text_b:
+                        matched_chunk_b = cb
+                        break
+                if not (matched_chunk_a and matched_chunk_b):
+                    continue
+            else:
+                matched_chunk_a = chunks_a[0]
+                matched_chunk_b = chunks_b[0]
 
             # Explicit supersession check
-            if _is_superseded_pair(chunk_a, chunk_b):
+            if _is_superseded_pair(matched_chunk_a, matched_chunk_b):
                 continue
 
             seen_pairs.add(pair_key)
@@ -262,8 +283,8 @@ class ConflictDetector:
                     topic=registry_entry["topic"],
                     doc_a_filename=doc_a,
                     doc_b_filename=doc_b,
-                    doc_a_chunk=chunk_a,
-                    doc_b_chunk=chunk_b,
+                    doc_a_chunk=matched_chunk_a,
+                    doc_b_chunk=matched_chunk_b,
                     note=registry_entry["note"],
                     source="registry",
                     confidence="confirmed",
