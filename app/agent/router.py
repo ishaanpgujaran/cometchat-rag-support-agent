@@ -109,13 +109,17 @@ _ORDER_FOLLOWUP_KEYWORDS: frozenset[str] = frozenset({
     "update", "late", "delay", "delayed", "receive", "received",
 })
 
-# Keywords that indicate the customer wants to look up an order
-# even when no explicit order ID is present
-_ORDER_CONTEXT_KEYWORDS: frozenset[str] = frozenset({
-    "order", "purchase", "bought", "buy", "package", "parcel",
-    "tracking", "track", "delivery", "deliver", "shipped", "shipping",
-    "arrive", "arrival", "receipt", "invoice",
-})
+# Patterns that indicate the customer specifically wants to check/track their order
+# but hasn't provided an order ID yet.
+_ORDER_STATUS_INTENT_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\b(where\s+is|status\s+of|track|tracking\s+number|tracking\s+info|when\s+will.*arrive|has.*shipped|check.*status|update\s+on)\b.{0,30}\b(my|the|an)?\s*(order|package|parcel|shipment|delivery)\b", re.IGNORECASE),
+    re.compile(r"\b(my|the)\s+(order|package|parcel|shipment)\s+(status|tracking|hasn't\s+arrived|is\s+late|delayed)\b", re.IGNORECASE),
+    re.compile(r"\b(track|lookup|look\s+up|find)\s+(my|the)?\s*(order|package|shipment)\b", re.IGNORECASE),
+]
+
+_DAMAGED_ITEM_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\b(damaged|broken|defect|defective|arrived\s+broken|broken\s+zipper|tear|torn)\b", re.IGNORECASE),
+]
 
 # ---------------------------------------------------------------------------
 # Unsupported / unsafe action patterns
@@ -213,9 +217,8 @@ def _message_has_order_followup_keywords(message: str) -> bool:
 
 
 def _message_has_order_context_keywords(message: str) -> bool:
-    """Return True if the message contains order-context keywords."""
-    tokens = _tokenise_lower(message)
-    return bool(tokens & _ORDER_CONTEXT_KEYWORDS)
+    """Return True if the message expresses intent to look up or track a specific order."""
+    return any(pat.search(message) for pat in _ORDER_STATUS_INTENT_PATTERNS)
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +295,7 @@ def route(session: Session, message: str) -> RouteResult:
             )
 
     # ------------------------------------------------------------------
-    # Signal 3 — Multi-turn order continuation (no new ID, but we have one)
+    # Signal 4 — Multi-turn order continuation (no new ID, but we have one)
     # ------------------------------------------------------------------
     if (
         ctx.last_route == RouteDecision.ORDER_LOOKUP.value
@@ -306,11 +309,9 @@ def route(session: Session, message: str) -> RouteResult:
         )
 
     # ------------------------------------------------------------------
-    # Signal 4 — Order-context keywords present but no ID and no prior order
+    # Signal 5 — Order-lookup intent without an order ID
     # ------------------------------------------------------------------
     if _message_has_order_context_keywords(message):
-        # If there's a prior order, continuation was already handled above.
-        # If not, we need to ask for the order ID.
         if not ctx.last_order_id:
             return RouteResult(
                 decision=RouteDecision.NEEDS_ORDER_ID,
@@ -318,21 +319,24 @@ def route(session: Session, message: str) -> RouteResult:
             )
 
     # ------------------------------------------------------------------
-    # Signal 5 — Multi-turn knowledge follow-up
+    # Signal 6 — Multi-turn knowledge follow-up
     # ------------------------------------------------------------------
     if ctx.last_route == RouteDecision.KNOWLEDGE_LOOKUP.value and ctx.last_topic:
         if _is_short_followup(message) or _topic_overlaps(message, ctx.last_topic):
             augmented_query = f"{ctx.last_topic} {message}".strip()
+            is_damaged = any(pat.search(message) for pat in _DAMAGED_ITEM_PATTERNS)
             return RouteResult(
                 decision=RouteDecision.KNOWLEDGE_LOOKUP,
                 query=augmented_query,
+                human_handoff=is_damaged,
             )
 
     # ------------------------------------------------------------------
-    # Signal 6 — Default: knowledge lookup (orchestrator may downgrade
-    #             to ABSTAIN_NO_EVIDENCE if retrieval returns nothing)
+    # Signal 7 — Default: knowledge lookup
     # ------------------------------------------------------------------
+    is_damaged = any(pat.search(message) for pat in _DAMAGED_ITEM_PATTERNS)
     return RouteResult(
         decision=RouteDecision.KNOWLEDGE_LOOKUP,
         query=message,
+        human_handoff=is_damaged,
     )

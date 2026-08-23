@@ -260,23 +260,14 @@ def _call_gemini_with_tools(
                 tool_result_obj = lookup_order(raw_order_id)
 
                 # Build follow-up conversation with tool response
+                # Reuse candidate.content directly to preserve any thought_signature / thinking parts
                 follow_up = list(messages) + [
-                    genai_types.Content(
-                        role="model",
-                        parts=[genai_types.Part(
-                            function_call=genai_types.FunctionCall(
-                                name=fc.name,
-                                args=dict(fc.args),
-                            )
-                        )],
-                    ),
+                    candidate.content,
                     genai_types.Content(
                         role="user",
-                        parts=[genai_types.Part(
-                            function_response=genai_types.FunctionResponse(
-                                name=fc.name,
-                                response=tool_result_obj.model_dump(exclude_none=True),
-                            )
+                        parts=[genai_types.Part.from_function_response(
+                            name=fc.name,
+                            response=tool_result_obj.model_dump(exclude_none=True),
                         )],
                     ),
                 ]

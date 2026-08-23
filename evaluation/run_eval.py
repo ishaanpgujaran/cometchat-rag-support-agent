@@ -118,10 +118,17 @@ class ModelRotator:
                 return result
             except Exception as e:
                 err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
+                if (
+                    "429" in err
+                    or "RESOURCE_EXHAUSTED" in err
+                    or "quota" in err.lower()
+                    or "404" in err
+                    or "NOT_FOUND" in err
+                    or "no longer available" in err
+                ):
                     print(
-                        f"[rotator] 429/quota on {self.current} (attempt {attempt + 1}). "
-                        "Rotating model."
+                        f"[rotator] {self.current} unavailable/quota ({err[:60]}...). "
+                        "Rotating to next model."
                     )
                     self._rotate()
                     time.sleep(self.INTER_REQUEST_DELAY_SECONDS)

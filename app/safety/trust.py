@@ -79,14 +79,12 @@ _FORBIDDEN_PATTERNS: list[re.Pattern] = [
 
 _COMPLETED_ACTION_PATTERNS: list[re.Pattern] = [
     re.compile(
-        r"\b((?:i\s+have|i've|we\s+have|we've|have|has\s+been|was|were|order\s+is|already)\s+(?:refunded|cancell?ed)|"
-        r"(?:issued|processed|approved|initiated)\s+(?:your|the|a)?\s*refund|"
-        r"refund\s+(?:has\s+been|was|is)\s+(?:issued|processed|completed|sent|approved)|"
-        r"cancell?ation\s+(?:has\s+been|is|was)\s+(?:confirmed|processed|completed)|"
-        r"replacement.{0,30}(?:sent|issued|created|processed|approved)|"
-        r"address.{0,30}(?:updated|changed|modified)|"
-        r"ticket.{0,20}(?:created|opened|filed|submitted|raised)|"
-        r"escalat(?:ed|ion).{0,30}(?:created|submitted|raised|opened|initiated))\b",
+        r"\b((?:i\s+have|i've|we\s+have|we've)\s+(?:refunded|cancell?ed|processed|approved|initiated|sent|created|opened|updated)|"
+        r"(?:i\s+have|i've|we\s+have|we've)\s+(?:issued|processed|approved|initiated)\s+(?:your|the|a)?\s*(?:refund|replacement|cancellation|ticket|claim)|"
+        r"cancell?ation\s+(?:has\s+been\s+confirmed|is\s+complete|is\s+confirmed)|"
+        r"replacement\s+(?:is\s+on\s+its\s+way|has\s+been\s+sent|has\s+been\s+dispatched)|"
+        r"(?:i|we)\s+(?:created|opened|filed|submitted|raised)\s+(?:a|the|your)\s+ticket|"
+        r"warranty\s+claim\s+has\s+been\s+(?:submitted|approved|processed))\b",
         re.IGNORECASE,
     ),
 ]
