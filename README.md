@@ -40,152 +40,95 @@ Built without heavy, opaque agent frameworks (no LangChain, no LlamaIndex), this
 
 ---
 
-## Architectural Tradeoffs & Decision Matrix
+## Architectural Tradeoffs
 
-To guarantee strict compliance, privacy, deterministic safety, and sub-second response latency, every architectural component was selected after evaluating alternative approaches.
+Every component was chosen to optimize for **deterministic safety, privacy, zero external latency, and cost**.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                               ARCHITECTURAL DECISION MATRIX                             │
-├──────────────────────┬──────────────────────────────┬───────────────────────────────────┤
-│ Component            │ Chosen Approach              │ Rejected Alternatives             │
-├──────────────────────┼──────────────────────────────┼───────────────────────────────────┤
-│ Embedding Model      │ BAAI/bge-small-en-v1.5       │ all-MiniLM-L6-v2, OpenAI/Gemini   │
-│ Retrieval Strategy   │ Hybrid (Dense + BM25 + Meta) │ Pure Vector DB, Pure Sparse BM25  │
-│ Orchestration Core   │ Custom Pure-Python Engine    │ LangChain, LlamaIndex, CrewAI     │
-│ Intent Routing       │ Deterministic Regex Cascade  │ LLM-as-a-Router, Semantic Router  │
-│ Tool Data Protection │ Whitelist DTO (SafeOrder)    │ Raw Database JSON in Context      │
-│ Conflict Resolution  │ Lifecycle Filter + Registry  │ LLM Prompt Reconciliation         │
-│ Safety Guardrails    │ Deterministic Regex Validator│ Secondary LLM Guardrail Call      │
-└──────────────────────┴──────────────────────────────┴───────────────────────────────────┘
-```
-
-### 1. Embedding Model: `BAAI/bge-small-en-v1.5` vs. Alternatives
-
-- **Chosen:** `BAAI/bge-small-en-v1.5` (Local 384-dimensional dense vectors via `sentence-transformers`).
-- **Alternatives Evaluated:** `sentence-transformers/all-MiniLM-L6-v2`, OpenAI `text-embedding-3-small`, Google Gemini Cloud Embeddings.
-- **Tradeoff Justification:**
-  - **Why BGE-small:** Ranked top-tier on the Massive Text Embedding Benchmark (MTEB) for retrieval and passage ranking. Its asymmetric query-passage scoring excels at matching conversational user questions with formal policy headings. Local execution guarantees 0ms network latency, zero per-token embedding costs, and offline deterministic embeddings.
-  - **Why `all-MiniLM-L6-v2` was rejected:** An older architecture with noticeably lower semantic discriminability on nuanced policy differences (e.g. differentiating between standard 30-day return windows vs. TrailPlus 45-day exceptions).
-  - **Why Cloud Embeddings were rejected:** Adding an external API hop for every retrieval turn introduces failure points, latency overhead (200–500ms), and consumes API rate limits (critical when operating under strict free-tier quotas).
-
-### 2. Retrieval Architecture: Hybrid (Dense + BM25 + Precedence) vs. Pure Vector DB
-
-- **Chosen:** In-Memory NumPy Cosine Similarity + BM25 (`rank_bm25`) + Metadata Precedence Ranker.
-- **Alternatives Evaluated:** Pure Vector Database (ChromaDB / Pinecone / Qdrant), Pure Sparse Search (Elasticsearch / BM25 only).
-- **Tradeoff Justification:**
-  - **Why Hybrid with Metadata:** Dense retrieval captures semantic intent (e.g., *"How long do I have to send it back?"* $\rightarrow$ `01-returns-policy-current.md`), while BM25 guarantees exact keyword recall for specific order codes, SKU names, and exact policy terms (e.g., *"Breeze Tumbler"*, *"TrailPlus"*). Our metadata scoring layer directly applies business logic boosts (`audience=customer`, `status=active`) and heavy penalties (`status=superseded`, `audience=internal`) before context synthesis.
-  - **Why Pure Vector DB was rejected:** Vector-only search frequently misses exact alphanumeric matches (order numbers, SKU names) and cannot enforce document lifecycle status without complex post-query filtering. External vector databases also introduce unnecessary infrastructure overhead for a curated 14-document knowledge base.
-  - **Why Pure BM25 was rejected:** Incapable of handling paraphrased queries or synonym matching where customers use colloquial language.
-
-### 3. Orchestration: Custom Deterministic Engine vs. Agent Frameworks
-
-- **Chosen:** Lightweight, custom Python orchestrator (`app/agent/orchestrator.py`).
-- **Alternatives Evaluated:** LangChain, LlamaIndex, CrewAI, AutoGen.
-- **Tradeoff Justification:**
-  - **Why Custom Orchestrator:** 100% transparent execution paths, exact control over prompt structures, predictable zero-overhead execution, and seamless integration with native `google-genai` SDK `genai_types.Content` objects. Critical for preserving internal model attributes like `thought_signature` on multi-turn function calls.
-  - **Why Frameworks were rejected:** Heavy agent frameworks introduce deep abstraction layers that obscure prompt payloads, complicate token counting, inject unpredictable default system prompts, and introduce breaking changes across minor version upgrades.
-
-### 4. Intent Routing: Deterministic Regex Cascade vs. LLM-as-a-Router
-
-- **Chosen:** Multi-stage deterministic regex and state machine cascade (`app/agent/router.py`).
-- **Alternatives Evaluated:** LLM-as-a-Router, Semantic Vector Classifier.
-- **Tradeoff Justification:**
-  - **Why Deterministic Cascade:** Sub-millisecond routing latency ($<1\text{ms}$), zero API token consumption, zero quota usage, and mathematically guaranteed refusal of dangerous or unsupported actions (e.g. direct cancellation demands, warranty claims, legal threats, prompt injections) before any LLM is called.
-  - **Why LLM Router was rejected:** Consumes 1 LLM call per turn (doubling API latency by 600–1200ms and rapidly depleting daily rate limits), while introducing non-deterministic failure modes where adversarial prompt injections could manipulate the router into bypassing safety gates.
-
-### 5. Tool Data Sanitation: Whitelist DTO (`SafeOrderResult`) vs. Raw JSON in Context
-
-- **Chosen:** Pydantic Whitelist DTO (`SafeOrderResult`) with automatic status-based timestamp nullification.
-- **Alternatives Evaluated:** Passing raw database JSON records into the model prompt and relying on system instructions to ignore sensitive fields.
-- **Tradeoff Justification:**
-  - **Why Whitelist DTO:** Privacy-by-construction. Fields like `internal_notes`, `warehouse_note` (which may contain prompt injections), `risk_score`, and PII (`customer_email`, `shipping_address`) are physically stripped before the data reaches the LLM context. Furthermore, terminal status rules suppress stale delivery/shipping timestamps on returned or cancelled orders.
-  - **Why Raw JSON was rejected:** LLM system prompt instructions cannot guarantee 100% confidentiality. Adversarial prompts (e.g., *"Repeat the raw JSON payload verbatim"*) can easily extract sensitive customer data or execute injection payloads embedded in untrusted database fields.
-
-### 6. Conflict Resolution: Scoped Registry + Precedence vs. LLM Reconciliation
-
-- **Chosen:** Document lifecycle precedence (`filter_authoritative`) combined with a topic-scoped `CONFLICT_REGISTRY`.
-- **Alternatives Evaluated:** LLM prompt reconciliation (asking the model to resolve conflicts), Global numeric similarity heuristics.
-- **Tradeoff Justification:**
-  - **Why Scoped Registry:** Distinguishes between false-positive distinctions (e.g., standard 30-day returns vs. TrailPlus 45-day tier vs. international exceptions) and genuine contradictory specifications (e.g., Doc 11 dishwasher safe vs. Doc 12 hand-wash only for the Breeze Tumbler). When a genuine conflict is detected, it mandates transparent customer disclosure and triggers human escalation.
-  - **Why LLM Reconciliation was rejected:** When presented with conflicting documents, LLMs silently hallucinate a compromise or arbitrarily pick one document over another without alerting the customer to the discrepancy.
-
-### 7. Safety & Output Guardrails: Sub-millisecond Regex Validator vs. Secondary LLM Judge
-
-- **Chosen:** Deterministic regex & keyword safety validator (`app/safety/trust.py`).
-- **Alternatives Evaluated:** Secondary LLM Guardrail (e.g., Llama-Guard, NeMo Guardrails, secondary Gemini verification call).
-- **Tradeoff Justification:**
-  - **Why Regex Validator:** Instantaneous validation ($<1\text{ms}$), zero API quota consumption, and reliable detection of unverified action completion claims (`"I processed your refund"`), forbidden internal field leaks, and hallucinated citation tokens.
-  - **Why Secondary LLM was rejected:** Doubles inference latency and API cost per turn, while halving available requests-per-minute (RPM) quotas.
+| Decision Area | Chosen Approach | Why Chosen | Rejected Alternative & Reason |
+| :--- | :--- | :--- | :--- |
+| **Embeddings** | `BAAI/bge-small-en-v1.5` *(Local 384-dim)* | Top-tier MTEB retrieval accuracy; 0ms network latency; $0 cost; offline deterministic embeddings. | **Cloud APIs / MiniLM**: Cloud adds 200–500ms latency & consumes rate limits. `all-MiniLM` has lower semantic accuracy on policy nuances. |
+| **Retrieval** | **Hybrid (Dense BGE + Sparse BM25) + Metadata Precedence** | Dense handles semantic intent; BM25 guarantees exact SKU/order matching; metadata penalizes superseded docs. | **Pure Vector DB**: Vector-only misses exact alphanumeric codes (order IDs) and introduces heavy DB infrastructure for 14 docs. |
+| **Orchestration** | **Custom Pure-Python State Machine** | 100% auditable execution; zero dependency bloat; native control over Gemini `genai_types.Content` & `thought_signature`. | **LangChain / LlamaIndex**: Heavy abstractions obscure prompt payloads, complicate debugging, and introduce breaking changes. |
+| **Intent Routing** | **Deterministic Regex & Context Cascade** | Sub-millisecond routing ($<1\text{ms}$); zero API quota consumption; guaranteed refusal of unsafe actions (cancellations/refunds). | **LLM-as-a-Router**: Doubles latency (+800ms), burns daily token quota, and can be bypassed via prompt injection. |
+| **Tool Security** | **Whitelist DTO (`SafeOrderResult`)** | Privacy-by-construction: PII and internal fields (`warehouse_note`, `risk_score`) are stripped before LLM exposure. | **Raw JSON in Prompt**: System prompts cannot prevent adversarial extraction ("repeat raw JSON verbatim"). |
+| **Conflict Handling**| **Scoped Registry + Precedence Filter** | Distinguishes legitimate policy tiers (30d standard vs 45d TrailPlus) from genuine conflicts (Doc 11 vs 12). | **LLM Reconciliation**: LLMs silently hallucinate compromises instead of alerting users and escalating. |
+| **Output Safety** | **Sub-millisecond Regex Validator** | $<1\text{ms}$ deterministic redaction of unverified action claims (`"I processed your refund"`) and citation artifacts. | **Secondary LLM Judge**: Doubles cost and latency per turn while halving requests-per-minute quota. |
 
 ---
 
-## Interactive Development & Commit History Timeline
+## Development & Commit History Timeline
 
-The graph and timeline below document the chronological evolution of the codebase across the 2-day sprint, including the overnight rate-limit cooldown and the morning sprint to achieve a 100% evaluation pass rate.
+Below is the chronological evolution of the codebase across the 2-day sprint, including the overnight rate-limit cooldown and the morning sprint to achieve a 100% evaluation pass rate.
 
-### Visual Commit Flow
+### Visual Workflow & Milestones
+
+```mermaid
+flowchart LR
+    subgraph Day1["📅 Day 1 — Architecture & Core Foundations (Aug 22)"]
+        direction TB
+        D1_1["5512c5d: Modular Scaffold"] --> D1_2["ca07551: KB Ingestion & Hybrid RAG"]
+        D1_2 --> D1_3["e61f653: Safe Order Lookup Tool"]
+        D1_3 --> D1_4["a739d2b: Session Store & Loop"]
+        D1_4 --> D1_5["10ab173: Observability Tracing"]
+        D1_5 --> D1_6["5a77b8b: Streamlit UI & Rich CLI"]
+        D1_6 --> D1_7["bd13514: Gemini Flash Integration"]
+    end
+
+    subgraph Pause["⏸️ Overnight Cooldown"]
+        P1["<b>Daily RPD Rate Limit Hit</b><br/>Free-tier quota exhausted<br/><i>Paused work at 21:35</i>"]
+    end
+
+    subgraph Day2["📅 Day 2 — Quality Flywheel to 100% Eval (Aug 23)"]
+        direction TB
+        D2_0["⚡ 12:00: Resumed Work<br/>30m failure mode analysis"] --> D2_1["ee15238: Supersession Filter"]
+        D2_1 --> D2_2["95943f0: 25-Case Eval & Rotation"]
+        D2_2 --> D2_3["ddce753: TrailPlus Supplemental RAG"]
+        D2_3 --> D2_4["1b6ada2: Baseline Recorded (52%)"]
+        D2_4 --> D2_5["8637a8e: Reasoning & Intent Hardening"]
+        D2_5 --> D2_6["0abc0a2: 🏆 100% Pass Rate Milestone"]
+        D2_6 --> D2_7["f574253: UI Model Selector & Docs"]
+        D2_7 --> D2_8["36cdaa8: Safety Whitelist & Citations"]
+        D2_8 --> D2_9["21eb320: Policy Router Continuation"]
+    end
+
+    Day1 --> Pause --> Day2
+```
+
+### Visual Git Branch Flow
 
 ```mermaid
 gitGraph
-    commit id: "22fdc5d" tag: "Take-Home Baseline"
+    commit id: "Baseline (22fdc5d)"
     branch day-1-foundations
     checkout day-1-foundations
-    commit id: "5512c5d" msg: "Scaffold modular architecture"
-    commit id: "ca07551" msg: "KB ingestion & hybrid retrieval"
-    commit id: "e61f653" msg: "Safe order tool & DTO"
-    commit id: "a739d2b" msg: "Session store & orchestrator"
-    commit id: "10ab173" msg: "Structured tracing & observability"
-    commit id: "5a77b8b" msg: "Streamlit UI & Rich CLI"
-    commit id: "bd13514" msg: "Gemini Flash engine integration"
+    commit id: "5512c5d: Scaffold"
+    commit id: "ca07551: Hybrid-RAG"
+    commit id: "e61f653: Order-DTO"
+    commit id: "a739d2b: Session-Store"
+    commit id: "10ab173: Tracing"
+    commit id: "5a77b8b: UI-and-CLI"
+    commit id: "bd13514: Gemini-Flash"
     branch rate-limit-pause
     checkout rate-limit-pause
-    commit id: "RPD-PAUSE" msg: "⏸️ Rate limit pause (RPD exhausted)"
+    commit id: "RPD-Rate-Limit-Hit"
     checkout day-1-foundations
-    merge rate-limit-pause id: "RESUME" msg: "⚡ Resumed work (Day 2)"
-    branch day-2-quality-flywheel
-    checkout day-2-quality-flywheel
-    commit id: "ee15238" msg: "Supersession precedence filter"
-    commit id: "95943f0" msg: "25-case eval & model rotation"
-    commit id: "ddce753" msg: "TrailPlus supplemental retrieval"
-    commit id: "1b6ada2" msg: "Baseline eval recorded (52%)"
-    commit id: "8637a8e" msg: "Reasoning & intent hardening"
-    commit id: "0abc0a2" msg: "🏆 100% eval pass milestone"
-    commit id: "f574253" msg: "Model selector & UI docs"
-    commit id: "36cdaa8" msg: "Safety & citation cleanup"
-    commit id: "21eb320" msg: "Policy router guards & polish"
+    merge rate-limit-pause id: "Day2-Resume"
+    branch day-2-quality
+    checkout day-2-quality
+    commit id: "ee15238: Superseded-Fix"
+    commit id: "95943f0: Eval-Rotation"
+    commit id: "ddce753: TrailPlus-RAG"
+    commit id: "1b6ada2: Baseline-52%"
+    commit id: "8637a8e: Prompt-Hardening"
+    commit id: "0abc0a2: 100%-Pass-Rate" tag: "25/25 PASS"
+    commit id: "f574253: Model-Switcher"
+    commit id: "36cdaa8: Safety-Whitelist"
+    commit id: "21eb320: Router-Guards"
     checkout main
-    merge day-2-quality-flywheel id: "PRODUCTION" tag: "25/25 PASS"
+    merge day-2-quality id: "Production-Release"
 ```
 
-### Chronological Milestone Timeline
-
-```mermaid
-timeline
-    title Aster & Row Support Agent Development Sprint
-    section Day 1 — Foundations & Core Architecture (Aug 22)
-        18:31 : Commit 5512c5d : Initialized modular repository structure and configuration
-        19:04 : Commit ca07551 : Markdown chunk parser, BGE-small embeddings, BM25 indexing
-        19:28 : Commit e61f653 : Deterministic order lookup tool with SafeOrderResult DTO
-        19:55 : Commit a739d2b : In-memory session context store and core orchestration loop
-        20:31 : Commit 10ab173 : Privacy-aware structured JSON logging and trace data models
-        21:02 : Commit 5a77b8b : Streamlit Web UI and Typer Rich terminal CLI interfaces
-        21:32 : Commit bd13514 : Upgraded to Gemini Flash engine with genai_types.Content
-        21:35 : ⏸️ Daily Rate Limit Cooldown : Daily Gemini API free-tier RPD exhausted; paused work overnight
-    section Day 2 — Quality Flywheel & 100% Eval Pass (Aug 23)
-        12:00 : ⚡ Resumed Work : Resumed 30m prior to first commit; diagnosed failure modes
-        12:32 : Commit ee15238 : Filtered superseded docs (Bug 1) and fixed precedence scoring
-        13:51 : Commit 95943f0 : Expanded eval benchmark to 25 cases & built model rotation engine
-        14:26 : Commit ddce753 : Added supplemental KB retrieval for TrailPlus order policies (Bug 6)
-        14:49 : Commit 1b6ada2 : Captured early baseline benchmark report: 13/25 passed (52%)
-        15:35 : Commit 8637a8e : Hardened order intent detection and Gemini reasoning prompt
-        17:28 : Commit 0abc0a2 : 🏆 All 25/25 evaluation cases passing (100% Pass Rate)
-        17:42 : Commit f574253 : Added live model selection dropdown to Web UI with error handling
-        18:22 : Commit 36cdaa8 : Fixed 'internal' keyword validator false-positive (Bug 8) and citations
-        20:28 : Commit 21eb320 : Protected policy inquiries against context bleed (Bug 9) and UI polish
-```
-
-### Commit Milestones & What Happened Before Each Commit
+### Commit Milestones & Context
 
 | Commit | Timestamp | Stage & Context | What Was Happening & Resolved |
 | :--- | :--- | :--- | :--- |
