@@ -5,6 +5,7 @@ from app.policy.scoring import (
     score_and_rank,
     score_candidate,
     is_authoritative,
+    filter_authoritative,
     ALPHA,
     BETA,
     BONUS_ACTIVE_OFFICIAL,
@@ -25,6 +26,7 @@ __all__ = [
     "score_and_rank",
     "score_candidate",
     "is_authoritative",
+    "filter_authoritative",
     "ALPHA",
     "BETA",
     "BONUS_ACTIVE_OFFICIAL",
@@ -37,3 +39,4 @@ __all__ = [
     "ConflictGroup",
     "CONFLICT_REGISTRY",
 ]
+

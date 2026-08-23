@@ -162,3 +162,20 @@ def is_authoritative(evidence: ScoredEvidence) -> bool:
         and m.customer_answering
         and evidence.final_score > 0
     )
+
+
+def filter_authoritative(evidence: list[ScoredEvidence]) -> list[ScoredEvidence]:
+    """Filter evidence list to keep ONLY active, official, customer-facing chunks.
+
+    Criteria:
+    - status == 'active'
+    - policy_authority == 'official'
+    - audience == 'customer'
+    """
+    return [
+        e for e in evidence
+        if e.chunk.metadata.status == "active"
+        and e.chunk.metadata.policy_authority == "official"
+        and e.chunk.metadata.audience == "customer"
+    ]
+

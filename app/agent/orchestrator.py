@@ -64,7 +64,12 @@ from app.observability.trace import (
 from app.orders.lookup import lookup_order
 from app.orders.models import SafeOrderResult
 from app.policy.conflict import ConflictDetector
-from app.policy.scoring import ScoredEvidence, is_authoritative, score_and_rank
+from app.policy.scoring import (
+    ScoredEvidence,
+    filter_authoritative,
+    is_authoritative,
+    score_and_rank,
+)
 from app.retrieval.index import hybrid_search
 from app.safety.trust import validate_response
 from app.session.store import (
@@ -476,16 +481,19 @@ def handle_message_with_trace(
         conflict_groups = []
 
         if decision == RouteDecision.KNOWLEDGE_LOOKUP:
-            evidence = _fetch_and_filter_evidence(route_result.query)
+            raw_evidence = _fetch_and_filter_evidence(route_result.query)
             trace.ts_retrieved = _utcnow()
-            trace.retrieved_candidates = _build_candidate_refs(evidence)
+            trace.retrieved_candidates = _build_candidate_refs(raw_evidence)
+
+            # Filter to authoritative evidence only
+            evidence = filter_authoritative(raw_evidence)
             trace.authoritative_evidence = _extract_citations(evidence)
 
-            auth_count = sum(1 for e in evidence if is_authoritative(e))
+            auth_count = len(evidence)
             _log_stage(
                 trace.trace_id, session_id, "retrieve",
                 "stage=retrieved",
-                candidate_count=len(evidence),
+                candidate_count=len(raw_evidence),
                 authoritative_count=auth_count,
                 # Log filename#heading refs only -- never chunk text
                 top_refs=[
@@ -508,8 +516,7 @@ def handle_message_with_trace(
             )
 
             # Downgrade to ABSTAIN if no authoritative evidence found
-            authoritative_count = sum(1 for e in evidence if is_authoritative(e))
-            if authoritative_count < _MIN_AUTHORITATIVE:
+            if len(evidence) < _MIN_AUTHORITATIVE:
                 logger.info("[session=%s] No authoritative evidence — abstaining.", session_id)
                 decision = RouteDecision.ABSTAIN_NO_EVIDENCE
                 trace.route_decision = decision.value

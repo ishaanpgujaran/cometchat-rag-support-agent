@@ -79,10 +79,14 @@ _FORBIDDEN_PATTERNS: list[re.Pattern] = [
 
 _COMPLETED_ACTION_PATTERNS: list[re.Pattern] = [
     re.compile(
-        r"\b(refund|refunded|cancell?ed|cancelled|replacement.{0,30}(sent|issued|created|"
-        r"processed|approved)|address.{0,30}(updated|changed|modified)|"
-        r"ticket.{0,20}(created|opened|filed|submitted|raised)|"
-        r"escalat(ed|ion).{0,30}(created|submitted|raised|opened|initiated))\b",
+        r"\b((?:i\s+have|i've|we\s+have|we've|have|has\s+been|was|were|order\s+is|already)\s+(?:refunded|cancell?ed)|"
+        r"(?:issued|processed|approved|initiated)\s+(?:your|the|a)?\s*refund|"
+        r"refund\s+(?:has\s+been|was|is)\s+(?:issued|processed|completed|sent|approved)|"
+        r"cancell?ation\s+(?:has\s+been|is|was)\s+(?:confirmed|processed|completed)|"
+        r"replacement.{0,30}(?:sent|issued|created|processed|approved)|"
+        r"address.{0,30}(?:updated|changed|modified)|"
+        r"ticket.{0,20}(?:created|opened|filed|submitted|raised)|"
+        r"escalat(?:ed|ion).{0,30}(?:created|submitted|raised|opened|initiated))\b",
         re.IGNORECASE,
     ),
 ]

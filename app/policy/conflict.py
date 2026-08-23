@@ -170,6 +170,29 @@ def _is_active_official(chunk: Chunk) -> bool:
     return m.status == "active" and m.policy_authority == "official"
 
 
+def _is_superseded_pair(chunk_a: Chunk, chunk_b: Chunk) -> bool:
+    """Return True if one document is superseded by the other or either is marked superseded."""
+    m_a = chunk_a.metadata
+    m_b = chunk_b.metadata
+
+    # Explicit supersession relationship checks
+    if m_a.status == "superseded" and m_a.superseded_by and m_a.superseded_by == m_b.document_id:
+        return True
+    if m_a.supersedes and m_a.supersedes == m_b.document_id:
+        return True
+
+    if m_b.status == "superseded" and m_b.superseded_by and m_b.superseded_by == m_a.document_id:
+        return True
+    if m_b.supersedes and m_b.supersedes == m_a.document_id:
+        return True
+
+    # General guard: superseded status
+    if m_a.status == "superseded" or m_b.status == "superseded":
+        return True
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # ConflictDetector
 # ---------------------------------------------------------------------------
@@ -223,17 +246,24 @@ class ConflictDetector:
                 continue
             if pair_key in seen_pairs:
                 continue
-            seen_pairs.add(pair_key)
 
             doc_a = registry_entry["doc_a"]
             doc_b = registry_entry["doc_b"]
+            chunk_a = filename_to_chunks[doc_a]
+            chunk_b = filename_to_chunks[doc_b]
+
+            # Explicit supersession check
+            if _is_superseded_pair(chunk_a, chunk_b):
+                continue
+
+            seen_pairs.add(pair_key)
             groups.append(
                 ConflictGroup(
                     topic=registry_entry["topic"],
                     doc_a_filename=doc_a,
                     doc_b_filename=doc_b,
-                    doc_a_chunk=filename_to_chunks[doc_a],
-                    doc_b_chunk=filename_to_chunks[doc_b],
+                    doc_a_chunk=chunk_a,
+                    doc_b_chunk=chunk_b,
                     note=registry_entry["note"],
                     source="registry",
                     confidence="confirmed",
@@ -257,6 +287,10 @@ class ConflictDetector:
 
                 # Skip same-document pairs
                 if chunk_a.metadata.document_id == chunk_b.metadata.document_id:
+                    continue
+
+                # Explicit supersession check
+                if _is_superseded_pair(chunk_a, chunk_b):
                     continue
 
                 pair = frozenset({chunk_a.metadata.filename, chunk_b.metadata.filename})
