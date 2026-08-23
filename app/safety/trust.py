@@ -49,8 +49,18 @@ from app.orders.models import SafeOrderResult
 
 
 # Forbidden field patterns (must never appear in customer-facing output)
-# Note: "internal" is specifically targeted to data-disclosure contexts (e.g. "internal notes")
-# so that descriptive prose like "internal document" or "internal policy" is not falsely flagged.
+#
+# Design rules for these patterns:
+# ─────────────────────────────────
+# • "internal" — only in data-disclosure context (e.g. "internal notes:"),
+#   NOT in descriptive prose like "internal document" or "internal policy".
+# • "email" — only an actual email address (contains @), NOT the word "email"
+#   used as a verb/noun in policy prose (e.g. "please email our support team").
+# • "address" — only when used as a field label before a value (e.g.
+#   "shipping address: 123 Main St"), NOT as an English verb/noun in policy
+#   prose (e.g. "address this issue", "address manufacturing defects",
+#   "address customs duties").  The actual street-address literal is caught by
+#   the eval suite's must_not_include assertion, not by this pattern.
 ALLOWED_INTERNAL_PHRASES: list[str] = [
     "internal document",
     "internal content",
@@ -60,8 +70,10 @@ ALLOWED_INTERNAL_PHRASES: list[str] = [
 ]
 
 _FORBIDDEN_PATTERNS: list[re.Pattern] = [
-    re.compile(r"\bemail\b", re.IGNORECASE),
-    re.compile(r"\baddress\b", re.IGNORECASE),
+    # Actual email address pattern (contains @), not the word "email"
+    re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", re.IGNORECASE),
+    # "address" only when used as a field label (e.g. "shipping address:", "address: 123")
+    re.compile(r"(?:shipping|delivery|mailing|billing|customer|return)\s+address\s*[:\-]|(?<!\w)address\s*[:\-]\s*\d", re.IGNORECASE),
     re.compile(r"\binternal\s+(?:note|notes|field|fields|data|record|score|tag|tags|flag|flags)\b", re.IGNORECASE),
     re.compile(r"\bnote[-_]?raw\b", re.IGNORECASE),
     re.compile(r"\bwarehouse_note\b|\bwarehousenote\b", re.IGNORECASE),
