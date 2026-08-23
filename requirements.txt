@@ -2,9 +2,12 @@ python-dotenv
 pydantic
 rank-bm25
 sentence-transformers
+numpy
+pandas
 pyyaml
 pytest
 google-genai
 typer
+rich
 streamlit
 
