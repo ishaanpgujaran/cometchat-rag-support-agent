@@ -365,11 +365,20 @@ def validate_response(
     # ------------------------------------------------------------------
     # Escalation triggers (Doc 13 rules)
     # ------------------------------------------------------------------
-    if (not evidence_pack and tool_result is None) or re.search(
-        r"\b(?:do\s+not\s+have|don't\s+have|insufficient)\b.{0,30}\b(?:information|evidence|details)\b",
-        text,
-        re.IGNORECASE,
-    ):
+    insufficient_info_match = bool(
+        (not evidence_pack and tool_result is None)
+        or re.search(
+            r"\b(?:do\s+not\s+have|does\s+not\s+have|don't\s+have|doesn't\s+have|do\s+not\s+contain|does\s+not\s+contain|insufficient|not\s+enough)\b.{0,40}\b(?:information|evidence|details|documentation|data)\b",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:human\s+confirmation|contact\s+support\s+for\s+(?:human\s+)?confirmation)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if insufficient_info_match:
         human_handoff = True
         flags.append("Insufficient knowledge base information — human review required.")
 
