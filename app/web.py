@@ -107,6 +107,9 @@ def main() -> None:
             st.session_state.latest_trace = None
             st.rerun()
 
+        available_models = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.7-flash"]
+        selected_model = st.selectbox("🤖 Model", available_models, index=0)
+
         st.divider()
         show_debug = st.toggle("Show debug trace", value=False)
 
@@ -143,27 +146,36 @@ def main() -> None:
         # Call orchestrator
         with st.chat_message("assistant"):
             with st.spinner("Finding answer..."):
-                response, trace = handle_message_with_trace(
-                    session_id=st.session_state.session_id,
-                    message=prompt,
-                )
+                try:
+                    response, trace = handle_message_with_trace(
+                        session_id=st.session_state.session_id,
+                        message=prompt,
+                        model_override=selected_model,
+                    )
+                    st.markdown(response.text)
+                    if response.citations:
+                        st.markdown("**Sources:**")
+                        for cit in response.citations:
+                            st.markdown(f"- `[{cit}]`")
+                    if response.human_handoff:
+                        st.warning(f"⚠️ **Human Assistance Recommended:** {HUMAN_HANDOFF_MESSAGE}")
 
-            st.markdown(response.text)
-            if response.citations:
-                st.markdown("**Sources:**")
-                for cit in response.citations:
-                    st.markdown(f"- `[{cit}]`")
-            if response.human_handoff:
-                st.warning(f"⚠️ **Human Assistance Recommended:** {HUMAN_HANDOFF_MESSAGE}")
-
-        # Record assistant response & trace
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": response.text,
-            "citations": response.citations,
-            "human_handoff": response.human_handoff,
-        })
-        st.session_state.latest_trace = trace
+                    # Record assistant response & trace
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": response.text,
+                        "citations": response.citations,
+                        "human_handoff": response.human_handoff,
+                    })
+                    st.session_state.latest_trace = trace
+                except Exception as exc:
+                    err_msg = f"⚠️ Gemini API service is temporarily unavailable or experiencing high demand. Please try again in a moment. (Error: {exc})"
+                    st.error(err_msg)
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": err_msg,
+                        "human_handoff": True,
+                    })
         st.rerun()
 
 
