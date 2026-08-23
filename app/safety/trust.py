@@ -48,27 +48,25 @@ from app.policy.conflict import ConflictGroup
 from app.orders.models import SafeOrderResult
 
 
-# ---------------------------------------------------------------------------
-# Forbidden field names (must never appear in customer-facing output)
-# ---------------------------------------------------------------------------
-
-_FORBIDDEN_FIELDS: list[str] = [
-    "email",
-    "address",
-    r"internal",
-    r"note[-_]?raw",
-    "warehouse_note",
-    "warehousenote",
-    "risk_score",
-    "riskscore",
-    "support_tags",
-    "supporttags",
+# Forbidden field patterns (must never appear in customer-facing output)
+# Note: "internal" is specifically targeted to data-disclosure contexts (e.g. "internal notes")
+# so that descriptive prose like "internal document" or "internal policy" is not falsely flagged.
+ALLOWED_INTERNAL_PHRASES: list[str] = [
+    "internal document",
+    "internal content",
+    "internal policy",
+    "internal migration",
+    "internal material",
 ]
 
-# Pre-compiled as word-boundary patterns (case-insensitive)
 _FORBIDDEN_PATTERNS: list[re.Pattern] = [
-    re.compile(r"\b" + p + r"\b", re.IGNORECASE)
-    for p in _FORBIDDEN_FIELDS
+    re.compile(r"\bemail\b", re.IGNORECASE),
+    re.compile(r"\baddress\b", re.IGNORECASE),
+    re.compile(r"\binternal\s+(?:note|notes|field|fields|data|record|score|tag|tags|flag|flags)\b", re.IGNORECASE),
+    re.compile(r"\bnote[-_]?raw\b", re.IGNORECASE),
+    re.compile(r"\bwarehouse_note\b|\bwarehousenote\b", re.IGNORECASE),
+    re.compile(r"\brisk_score\b|\briskscore\b", re.IGNORECASE),
+    re.compile(r"\bsupport_tags\b|\bsupporttags\b", re.IGNORECASE),
 ]
 
 # ---------------------------------------------------------------------------
@@ -100,6 +98,10 @@ _UNSUPPORTED_ACTION_REPLACEMENT = (
 # ---------------------------------------------------------------------------
 
 _CITATION_RE = re.compile(r"(\d{2}-[\w-]+\.md#[^\s\]\)\"',;]+)")
+
+CITATION_ARTIFACT_PATTERN: re.Pattern = re.compile(
+    r'\s*\[(?:[^\]]*(?:\.md|#)[^\]]*|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\]'
+)
 
 
 # ---------------------------------------------------------------------------
@@ -272,16 +274,36 @@ def validate_response(
             valid_citations.add(f"{m.filename}#{m.heading}")
 
     # ------------------------------------------------------------------
-    # (a) Citation validation
+    # (a) Citation validation & artifact stripping
     # ------------------------------------------------------------------
-    claimed_citations = _CITATION_RE.findall(text)
-    for citation in claimed_citations:
-        # A citation is valid if either the full "file#heading" OR just
-        # the "file" part appears in valid_citations
+    # Find all bracketed references [ ... ]
+    bracketed_refs = re.findall(r"\[([^\]]+)\]", text)
+    for raw_ref in bracketed_refs:
+        cleaned_ref = raw_ref.strip()
+        # If it looks like a citation reference (contains .md or #)
+        if ".md" in cleaned_ref or "#" in cleaned_ref:
+            filename_part = cleaned_ref.split("#")[0].strip()
+            # Check if this citation matches any authoritative evidence chunk
+            is_valid_cit = (
+                cleaned_ref in valid_citations
+                or filename_part in valid_citations
+                or any(cleaned_ref == v or filename_part == v.split("#")[0] for v in valid_citations)
+            )
+            if not is_valid_cit:
+                flags.append(f"Hallucinated citation stripped: '{cleaned_ref}'")
+                # Remove the entire bracketed token including surrounding space
+                text = re.sub(r"\s*\[\s*" + re.escape(raw_ref) + r"\s*\]", "", text)
+
+    # Bare citation fallback (unbracketed)
+    for citation in _CITATION_RE.findall(text):
         filename_part = citation.split("#")[0]
         if citation not in valid_citations and filename_part not in valid_citations:
             flags.append(f"Hallucinated citation stripped: '{citation}'")
-            text = text.replace(citation, "[source unavailable]")
+            text = text.replace(citation, "")
+
+    # Cleanup pass: remove empty brackets, artifact brackets, and collapse whitespace
+    text = re.sub(r"\[\s{0,20}\]", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
 
     # ------------------------------------------------------------------
     # (b) Forbidden field names

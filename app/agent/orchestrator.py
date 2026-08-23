@@ -713,6 +713,8 @@ def handle_message_with_trace(
         # 10. Build citations from authoritative evidence
         # --------------------------------------------------------------
         citations = _extract_citations(evidence)
+        if effective_tool_result is not None and effective_tool_result.found:
+            citations.append(f"Order record: {effective_tool_result.order_id}")
 
         # --------------------------------------------------------------
         # 11. Update session (assistant turn + context)

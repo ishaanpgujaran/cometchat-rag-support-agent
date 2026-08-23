@@ -177,6 +177,16 @@ Per the project requirements (ASSIGN_README lines 124–131), this section docum
 
 ---
 
+### Bug 8: "internal" Word False Positive in Forbidden-Field Validator *(Discovered Beyond Visible Case Wording)*
+- **Category:** Safety / Trust Layer & Privacy Enforcement
+- **Owning Module:** `app/safety/trust.py` (`_FORBIDDEN_PATTERNS`)
+- **Symptom:** When the agent generated legitimate descriptive English prose explaining policy boundaries (e.g. *"The migration note is an internal document and not authoritative policy"*), the forbidden-field validator detected the bare word `"internal"`, flagged a false-positive data leak, and redacted the entire sentence.
+- **Root Cause:** `_FORBIDDEN_FIELDS` matched the bare word `\binternal\b` anywhere in the generated output text, failing to distinguish between descriptive English adjectives and actual database field disclosures.
+- **Code Fix:** Narrowed the check for `"internal"` to data-disclosure contexts (`\binternal\s+(?:note|notes|field|fields|data|record|score|tag|tags|flag|flags)\b`) and defined `ALLOWED_INTERNAL_PHRASES` (`"internal document"`, `"internal content"`, `"internal policy"`, `"internal migration"`, `"internal material"`), ensuring descriptive prose is permitted while actual internal field leaks (e.g. `"internal notes: ..."`, `"risk_score: ..."`) remain strictly redacted.
+- **Regression Test:** `tests/regression/test_internal_word_false_positive.py`
+
+---
+
 ## 5. Observability and Debug Tracing
 
 Every turn through the agent generates a structured `TraceRecord` (`app/observability/trace.py`) capturing:

@@ -184,6 +184,13 @@ _SAFETY_REASON = (
 )
 
 
+ORDER_CONTINUATION_SIGNALS: list[re.Pattern] = [
+    re.compile(r"\b(it|that|the order|my order|my package|the package|the shipment|this order)\b", re.IGNORECASE),
+    re.compile(r"\b(arrive|arrival|delivery|deliver|tracking|track|shipped|shipping|carrier|status|update)\b", re.IGNORECASE),
+    re.compile(r"\bord[-\s]?\d+\b", re.IGNORECASE),   # explicit order ID in any format
+]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -297,11 +304,13 @@ def route(session: Session, message: str) -> RouteResult:
 
     # ------------------------------------------------------------------
     # Signal 4 — Multi-turn order continuation (no new ID, but we have one)
+    # Only reuse stored order ID when the incoming message contains order signals
     # ------------------------------------------------------------------
+    has_order_signal = any(pat.search(message) for pat in ORDER_CONTINUATION_SIGNALS)
     if (
-        ctx.last_route == RouteDecision.ORDER_LOOKUP.value
-        and ctx.last_order_id
-        and _message_has_order_followup_keywords(message)
+        ctx.last_order_id
+        and has_order_signal
+        and ctx.last_route == RouteDecision.ORDER_LOOKUP.value
     ):
         return RouteResult(
             decision=RouteDecision.ORDER_LOOKUP,
@@ -313,7 +322,7 @@ def route(session: Session, message: str) -> RouteResult:
     # Signal 5 — Order-lookup intent without an order ID
     # ------------------------------------------------------------------
     if _message_has_order_context_keywords(message):
-        if not ctx.last_order_id:
+        if not (ctx.last_order_id and has_order_signal):
             return RouteResult(
                 decision=RouteDecision.NEEDS_ORDER_ID,
                 query=message,

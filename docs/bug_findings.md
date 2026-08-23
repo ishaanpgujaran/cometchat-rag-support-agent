@@ -82,7 +82,13 @@ that verify each fix.
 - **Symptom:** Inquiring about order `ORD-1008` (*"Can you tell me what is happening with order ORD-1008?"* which has `status: "returned"`) caused the agent to output `"Your order was delivered on July 25, and the return was received and processed"`. The evaluation assertion `must_not_include: ["delivered on July 25"]` failed.
 - **Root Cause:** In `data/orders.json`, `ORD-1008` is in a terminal `returned` status but still retains historical shipping and delivery timestamps (`shipped_at: 2026-07-22`, `delivered_at: 2026-07-25`). While `_apply_status_rules()` properly nullified `carrier`, `tracking_number`, and `estimated_delivery` for terminal statuses, it did not nullify `shipped_at` and `delivered_at`. As a result, the LLM received the historical delivery date and erroneously reported it alongside current status.
 - **Fix:** Updated `_apply_status_rules()` in `app/orders/lookup.py` to suppress both `shipped_at = None` and `delivered_at = None` for any terminal order status (`cancelled`, `returned`).
-- **Regression Test:** `tests/unit/test_orders.py::TestApplyStatusRules` & `evaluation/original_cases.json::returned-order-no-stale-delivery-info`
+### Bug 8: "internal" Word False Positive in Forbidden-Field Validator (Discovered Beyond Exact Visible Case Wording)
+- **Category:** Safety / Trust Layer & Privacy Enforcement
+- **Owning Module:** `app/safety/trust.py` (`_FORBIDDEN_PATTERNS`)
+- **Symptom:** When the agent generated legitimate descriptive English prose explaining policy boundaries (e.g. *"The migration note is an internal document and not authoritative policy"*), the forbidden-field validator detected the bare word `"internal"`, flagged a false-positive data leak, and redacted the entire sentence.
+- **Root Cause:** `_FORBIDDEN_FIELDS` matched the bare word `\binternal\b` anywhere in the generated output text, failing to distinguish between descriptive English adjectives and actual database field disclosures.
+- **Fix:** Narrowed the check for `"internal"` to data-disclosure contexts (`\binternal\s+(?:note|notes|field|fields|data|record|score|tag|tags|flag|flags)\b`) and defined `ALLOWED_INTERNAL_PHRASES` (`"internal document"`, `"internal content"`, `"internal policy"`, `"internal migration"`, `"internal material"`), ensuring descriptive prose is permitted while actual internal field leaks (e.g. `"internal notes: ..."`, `"risk_score: ..."`) remain strictly redacted.
+- **Regression Test:** `tests/regression/test_internal_word_false_positive.py`
 
 ---
 
